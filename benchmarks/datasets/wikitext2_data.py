@@ -12,7 +12,7 @@ from torchtext.vocab import build_vocab_from_iterator
 
 
 class Wikitext2Data:
-    def get_real_dataloaders(args):
+    def get_real_dataloaders(args, benchmark_config):
         """Return real dataloaders for training, testing and validation."""
 
         url = "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-v1.zip"
@@ -31,9 +31,8 @@ class Wikitext2Data:
         valid_dataset = data_process(iter(io.open(valid_filepath, encoding="utf8")))
         test_dataset = data_process(iter(io.open(test_filepath, encoding="utf8")))
 
-        # TODO(anj-s): Batch size needs to be argument that we pass in.
         def batchify(data):
-            batch_size = args.batch_size
+            batch_size = benchmark_config["batch_size"]
             data = torch.tensor(data)
             # Divide the dataset into bsz parts.
             nbatch = data.size(0) // batch_size
@@ -43,47 +42,18 @@ class Wikitext2Data:
             data = data.view(batch_size, -1).t().contiguous()
             return data
 
-        seq_len = 32
-        total_batch_size = seq_len * args.batch_size
+        total_batch_size = benchmark_config["seq_len"] * benchmark_config["batch_size"]
         train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=total_batch_size, collate_fn=batchify)
         valid_dataloader = torch.utils.data.DataLoader(valid_dataset, batch_size=total_batch_size, collate_fn=batchify)
         test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=total_batch_size, collate_fn=batchify)
         return len(vocab.stoi), train_dataloader, valid_dataloader, test_dataloader
 
-    def get_raw_real_data(device):
-        """Return batched data from wikitext2 dataset for training, validation and testing."""
 
-        with warnings.catch_warnings(record=True) as _:
-            text_field = torchtext.data.Field(
-                tokenize=get_tokenizer("basic_english"), init_token="<sos>", eos_token="<eos>", lower=True
-            )
-            train_txt, val_txt, test_txt = torchtext.datasets.WikiText2.splits(text_field)
-            text_field.build_vocab(train_txt)
-            ntokens = len(text_field.vocab.stoi)
-
-            batch_size = 20
-            eval_batch_size = 10
-            train_data = batchify(train_txt, batch_size, text_field, device)
-            val_data = batchify(val_txt, eval_batch_size, text_field, device)
-            test_data = batchify(test_txt, eval_batch_size, text_field, device)
-
-            return ntokens, train_data, val_data, test_data
-
-    def batchify(data, bsz, text_field, device):
-        """Return batched data that is placed on the specified device."""
-
-        data = text_field.numericalize([data.examples[0].text])
-        nbatch = data.size(0) // bsz
-        data = data.narrow(0, 0, nbatch * bsz)
-        data = data.view(bsz, -1).t().contiguous()
-        return data.to(device)
-
-
-    def get_synthetic_dataloader(args):
+    def get_synthetic_dataloader(args, benchmark_config):
         """Return synthetic dataloaders for training, testing and validation."""
 
         def batchify(data):
-            batch_size = args.batch_size
+            batch_size = benchmark_config["batch_size"]
             data = torch.tensor(data)
             # Divide the dataset into bsz parts.
             nbatch = data.size(0) // batch_size
@@ -93,9 +63,7 @@ class Wikitext2Data:
             data = data.view(batch_size, -1).t().contiguous()
             return data
 
-        # TODO(anj-s): Both seq_len and batch size should be part of the golden config.
-        seq_len = 32
-        total_batch_size = seq_len * args.batch_size
+        total_batch_size = benchmark_config["seq_len"] * benchmark_config["batch_size"]
         # vocab_size is 10000 and length of the real data is 2049990.
         lm_dataset = torch.randint(1, 10000, (2049990,))
 
