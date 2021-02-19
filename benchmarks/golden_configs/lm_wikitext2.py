@@ -6,7 +6,7 @@ from fairscale.optim import GradScaler
 
 
 def get_benchmark_config():
-
+    # TODO(anj-s): Separate out the model config from the train config.
     return {
         "epochs": 1,
         "vocab_size": 10000,
@@ -26,6 +26,7 @@ def get_benchmark_config():
 
 
 def get_golden_real_stats(multiprocess=False):
+    # TODO(anj-s): Add support for this being called by different benchmarks.
     if not multiprocess:
         return {
             "avg_wps": 703.778,

@@ -265,7 +265,6 @@ def train(model_config, model, benchmark_config, args):
         if pipe_group is None or pipe_group.rank() == pipe_group.size() - 1:
             target = target.to(get_device(model, -1))
             output = output.to(target.device)
-
             loss = criterion(output.view(-1, vocab_size), target.view(-1))
             if args.ddp_zero:
                 ddp_group = get_data_parallel_group()
