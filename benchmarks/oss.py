@@ -10,7 +10,7 @@ import tempfile
 import time
 from typing import Any, List, Optional, cast
 
-from golden_configs import oss_mnist
+from golden_configs.oss import oss_mnist
 import numpy as np
 import torch
 import torch.autograd.profiler as profiler

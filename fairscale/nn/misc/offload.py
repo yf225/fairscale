@@ -398,8 +398,6 @@ class OffloadModel(nn.Module):
     def forward(self, *inputs: Any, **_: Any) -> Any:
         # At least one of the inputs needs to have `requires_grad` set.
         # TODO(anj-s): Should we require users to set this or should we set it here?
-        # for inp in inputs:
-        # inp.requires_grad = True
         if self._checkpoint_activation:
             return ActivationCheckpointing.apply(*inputs, self)
 

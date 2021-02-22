@@ -9,7 +9,7 @@ import time
 
 from datasets.wikitext2_data import get_real_dataloaders as get_real_wikitext2_dataloaders
 from datasets.wikitext2_data import get_synthetic_dataloaders as get_synthetic_wikitext2_dataloaders
-from golden_configs import lm_wikitext2
+from golden_configs.offload import lm_wikitext2
 from models import transformer_lm
 import numpy as np
 import torch
@@ -137,6 +137,7 @@ def train(model_config, model, benchmark_config, args):
         target = target.to("cuda")
         output = output.to(target.device)
         loss = criterion(output.view(-1, vocab_size), target.view(-1))
+        # loss.requires_grad = True
         loss.backward()
         del target
         del output
@@ -158,7 +159,6 @@ def train(model_config, model, benchmark_config, args):
             total_tokens_per_log_interval = 0
             total_loss = 0
             start_time = time.time()
-
     if epoch_start_time != 0:
         wps = total_tokens / (time.time() - epoch_start_time)
     else:
@@ -261,7 +261,7 @@ def create_model_config(args, benchmark_config=None):
     else:
         dataloader_fn = get_real_dataloaders
 
-    data = dataloader_fn(args, benchmark_config)
+    data = dataloader_fn(args, device, benchmark_config)
     model, optimizer = get_model_and_optimizer(args, device, benchmark_config)
     return {
         "model": model,
@@ -321,7 +321,7 @@ parser.add_argument(
     help="Language Model(LM) used to benchmark nn.pipe.",
 )
 parser.add_argument("--use_synthetic_data", action="store_true", help="Uses synthetic data for running benchmarks.")
-parser.add_argument("--batch-size", type=int, default=8, help="size of a batch")
+parser.add_argument("--batch-size", type=int, default=2, help="size of a batch")
 
 
 if __name__ == "__main__":
