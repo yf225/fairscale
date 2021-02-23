@@ -23,14 +23,6 @@ def get_cuda_mem_allocated():
         return 0
 
 
-def reset_everything():
-    torch.cuda.synchronize()
-    gc.collect()
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
-    torch.manual_seed(0)
-
-
 class Model(nn.Module):
     def __init__(self, use_pytorch_checkpoint=False, use_fairscale_checkpoint=False, **kwargs):
         super().__init__()
@@ -72,26 +64,22 @@ class TestComparisonToPyTorch(unittest.TestCase):
             ret["gnorm"] = gnorm.item()
             return ret
 
-        reset_everything()
         input = torch.rand(2, 16, 32).requires_grad_(True)
         model = Model().to(device)
+        gc.collect()
         no_cpt = get_loss_and_gnorm(model, input.to(device))
-        del model
 
-        reset_everything()
         model = Model(use_pytorch_checkpoint=True).to(device)
+        gc.collect()
         pyt_cpt = get_loss_and_gnorm(model, input.to(device))
-        del model
 
-        reset_everything()
         model = Model(use_fairscale_checkpoint=True).to(device)
+        gc.collect()
         fairscale_cpt = get_loss_and_gnorm(model, input.to(device))
-        del model
 
-        reset_everything()
         model = Model(use_fairscale_checkpoint=True, offload_to_cpu=True).to(device)
+        gc.collect()
         fairscale_cpt_offload = get_loss_and_gnorm(model, input.to(device))
-        del model
 
         # Check for correctness.
         torch.testing.assert_allclose(no_cpt["loss"], pyt_cpt["loss"])
