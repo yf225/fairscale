@@ -60,7 +60,7 @@ class TestComparisonToPyTorch(unittest.TestCase):
             loss.backward()
             ret["mem_after_bwd"] = get_cuda_mem_allocated()
             gnorm = torch.norm(torch.stack([torch.norm(p.grad.detach()) for p in model.parameters()]))
-            ret["loss"] = loss.detach().item()
+            ret["loss"] = loss.item()
             ret["gnorm"] = gnorm.item()
             return ret
 
