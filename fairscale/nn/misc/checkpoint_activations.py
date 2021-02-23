@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from contextlib import contextmanager
+import functools
 from typing import Any, Dict, Generator, Optional, Tuple
 
 import torch
@@ -40,23 +41,8 @@ def checkpoint_wrapper(module: nn.Module, offload_to_cpu: bool = False) -> nn.Mo
         (nn.Module):
             wrapped module
     """
-    # Do not use functools.partial like:
-    #
-    #     module.forward = functools.partial(_checkpointed_forward, module.forward, offload_to_cpu)
-    #
-    # It causes the backward to hold-on to tensor memory even when model is
-    # freed.
-
-    # Use a wrapper to wrap the original module.
-    class CheckpointWrapper(nn.Module):
-        def __init__(self, module: nn.Module):
-            super().__init__()
-            self.module = module
-
-        def forward(self, *args: Any, **kwargs: Any) -> Any:
-            return _checkpointed_forward(self.module, offload_to_cpu, *args, **kwargs)
-
-    return CheckpointWrapper(module)
+    module.forward = functools.partial(_checkpointed_forward, module.forward, offload_to_cpu)  # type: ignore
+    return module
 
 
 def _checkpointed_forward(original_forward: Any, offload_to_cpu: bool, *args: Any, **kwargs: Any) -> Any:

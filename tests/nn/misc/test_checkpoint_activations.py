@@ -5,6 +5,7 @@
 
 """Test fairscale.nn.misc.checkpoint_activations API."""
 
+import gc
 import unittest
 
 import torch
@@ -20,6 +21,14 @@ def get_cuda_mem_allocated():
         return torch.cuda.memory_allocated()
     else:
         return 0
+
+
+def reset_everything():
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    torch.manual_seed(0)
 
 
 class Model(nn.Module):
@@ -59,22 +68,30 @@ class TestComparisonToPyTorch(unittest.TestCase):
             loss.backward()
             ret["mem_after_bwd"] = get_cuda_mem_allocated()
             gnorm = torch.norm(torch.stack([torch.norm(p.grad.detach()) for p in model.parameters()]))
-            ret["loss"] = loss.item()
+            ret["loss"] = loss.detach().item()
             ret["gnorm"] = gnorm.item()
             return ret
 
+        reset_everything()
         input = torch.rand(2, 16, 32).requires_grad_(True)
         model = Model().to(device)
         no_cpt = get_loss_and_gnorm(model, input.to(device))
+        del model
 
+        reset_everything()
         model = Model(use_pytorch_checkpoint=True).to(device)
         pyt_cpt = get_loss_and_gnorm(model, input.to(device))
+        del model
 
+        reset_everything()
         model = Model(use_fairscale_checkpoint=True).to(device)
         fairscale_cpt = get_loss_and_gnorm(model, input.to(device))
+        del model
 
+        reset_everything()
         model = Model(use_fairscale_checkpoint=True, offload_to_cpu=True).to(device)
         fairscale_cpt_offload = get_loss_and_gnorm(model, input.to(device))
+        del model
 
         # Check for correctness.
         torch.testing.assert_allclose(no_cpt["loss"], pyt_cpt["loss"])
