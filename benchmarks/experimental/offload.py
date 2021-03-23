@@ -178,7 +178,12 @@ def train(model_config, model, benchmark_config, model_specs, args):
         target = source[1 : 1 + seq_len]
         return data, target
 
+    # Print out model and benchmark configs
+    print(f"Model specs are {model_specs}")
+    print(f"Benchmark specs are {benchmark_config}")
     for i, batch in enumerate(lm_dataloader):
+        if i == 5:
+            break
         if i == 1:
             epoch_start_time = time.time()
 
@@ -214,7 +219,8 @@ def train(model_config, model, benchmark_config, model_specs, args):
             total_tokens_per_log_interval = 0
             total_loss = 0
             start_time = time.time()
-        prof.export_chrome_trace("/tmp/offload_prof")
+        if args.use_profiler:
+            prof.export_chrome_trace("/tmp/offload_prof")
 
     if epoch_start_time != 0:
         wps = total_tokens / (time.time() - epoch_start_time)
@@ -271,7 +277,7 @@ def benchmark_language_model(model_config, model, benchmark_config, model_specs,
     print("| end of epoch {:1d} | time: {:5.2f}s | train loss {:5.2f} ".format(epoch, elapsed_time, loss))
     print("-" * 110)
     print("Throughput(wps) is {:.2f}.".format(wps))
-    print("Peak allocated bytes on cuda:0: {:1d}".format(torch.cuda.memory_stats(0)["allocated_bytes.all.peak"]))
+    print("Peak allocated bytes on cuda:0: {:2f}".format(torch.cuda.memory_stats(0)["allocated_bytes.all.peak"]/2**30))
     # TODO(anj-s): Enable golden config data verification.
 
 
@@ -402,7 +408,7 @@ def run_benchmark(args):
 
 parser = argparse.ArgumentParser(description="benchmark")
 parser.add_argument(
-    "--dry_run", default=True, action="store_true", help="Run a sample training run without regression testing."
+    "--dry_run", default=False, action="store_true", help="Run a sample training run without regression testing."
 )
 parser.add_argument(
     "--debug",

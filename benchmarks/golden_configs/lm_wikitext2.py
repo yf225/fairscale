@@ -16,7 +16,7 @@ class Offload_Transformer:
             "initrange": 0.1,
             "scaler": GradScaler(),
             "clip_value": 0.05,
-            "num_decoder_layers": 10,
+            "num_decoder_layers": 230,
             "seq_len": 32,
         }
 
@@ -28,8 +28,8 @@ class Offload_Transformer:
             "batch_size": 8,
             "criterion": nn.CrossEntropyLoss(),
             "checkpoint_activation": True,
-            "num_microbatches": 1,
-            "slices": 3,
+            "num_microbatches": 5,
+            "slices": 5,
         }
 
 
