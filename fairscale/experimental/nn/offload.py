@@ -47,7 +47,7 @@ def _split(modules: nn.Sequential, number_splits: int) -> List[List[nn.Module]]:
     current_shard = 0
 
     logging.info(
-        f"This model has {total_number_params/1e6:.2f}M parameters, aiming for {number_parameters_per_shard/1e6:.2f}M parameters per shard"
+        f"This model has {total_number_params/1e9:.2f}B parameters, aiming for {number_parameters_per_shard/1e6:.2f}M parameters per shard"
     )
 
     for m in modules:
