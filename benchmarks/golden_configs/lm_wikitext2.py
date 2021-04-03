@@ -16,7 +16,7 @@ class Offload_Transformer:
             "initrange": 0.1,
             "scaler": GradScaler(),
             "clip_value": 0.05,
-            "num_decoder_layers": 250,
+            "num_decoder_layers": 70,
             "seq_len": 32,
         }
 
@@ -25,7 +25,7 @@ class Offload_Transformer:
         return {
             "epochs": 1,
             "lr": 0.001,  # learning rate
-            "batch_size": 64,
+            "batch_size": 8,
             "criterion": nn.CrossEntropyLoss(),
             "checkpoint_activation": True,
             "num_microbatches": 1,
