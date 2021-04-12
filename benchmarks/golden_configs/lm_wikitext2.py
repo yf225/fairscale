@@ -14,9 +14,8 @@ class Offload_Transformer:
             "nhead": 32,  # the number of heads in the multiheadattention models
             "dropout": 0,
             "initrange": 0.1,
-            "scaler": GradScaler(),
             "clip_value": 0.05,
-            "num_decoder_layers": 250,
+            "num_decoder_layers": 50,
             "seq_len": 32,
         }
 
@@ -27,9 +26,16 @@ class Offload_Transformer:
             "lr": 0.001,  # learning rate
             "batch_size": 8,
             "criterion": nn.CrossEntropyLoss(),
-            "checkpoint_activation": True,
+            "checkpoint_activation": False,
             "num_microbatches": 1,
-            "slices": 5,
+            "slices": 3 ,
+        }
+
+    def get_golden_real_stats():
+        return {
+            "avg_wps": 192.105,
+            "std_dev_wps": 39.56,
+            "peak_mem_usage": 1180848128,
         }
 
 
@@ -80,19 +86,12 @@ class Pipe:
             "criterion": nn.CrossEntropyLoss(),
         }
 
-    def get_golden_real_stats(multiprocess=False):
-        if not multiprocess:
-            return {
-                "avg_wps": 703.778,
-                "std_dev_wps": 5.732,
-                "peak_mem_usage": [2320996352, 1396742144, 1396742144, 2340010496],
-            }
-        else:
-            return {
-                "avg_wps": 647.404,
-                "std_dev_wps": 14.51,
-                "peak_mem_usage": [3305007616, 2578692608, 3304524288, 2578692608],
-            }
+    def get_golden_real_stats():
+        return {
+            "avg_wps": 703.778,
+            "std_dev_wps": 5.732,
+            "peak_mem_usage": [2320996352, 1396742144, 1396742144, 2340010496],
+        }
 
     def get_golden_synthetic_stats():
         # TODO(anj-s): Add support for synthetic regression benchmarks

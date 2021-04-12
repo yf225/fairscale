@@ -8,7 +8,8 @@
 # Pro tip: download circle ci cli to validate the config locally during development.
 
 version: 2.1
-
+orbs:
+  codecov: codecov/codecov@1.0.2
 # -------------------------------------------------------------------------------------
 # Environments to run the jobs in
 # -------------------------------------------------------------------------------------
@@ -65,17 +66,12 @@ install_dep_160: &install_dep_160
   - run:
       name: Install Dependencies with torch 1.6.0
       command: |
-        # make sure that apt-get retries if needed
-        sudo sh -c "echo 'APT::Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries"
-        sudo apt-get update -y
-        sudo apt-get install -y libopenmpi-dev
         # check if we have restored venv cache (/home/circleci/venv) correctly, if so, just skip
         if [ -f /home/circleci/venv/check_version.py ]; then python /home/circleci/venv/check_version.py torch eq 1.6 && exit 0; fi
         # start installing
         pip install --progress-bar off torch==1.6.0+cu101 torchvision==0.7.0+cu101 -f https://download.pytorch.org/whl/torch_stable.html
         pip install --progress-bar off -r requirements-test.txt
         pip install --progress-bar off -r requirements-benchmarks.txt
-        pip install --progress-bar off git+https://github.com/msbaines/torch_pg.git@c85c96f#egg=torch-pg
         python -c 'import torch; print("Torch version:", torch.__version__)'
         python -c 'import torch; assert torch.__version__.split(".")[:2] == ["1", "6"], "wrong torch version"'
         python -m torch.utils.collect_env
@@ -85,38 +81,44 @@ install_dep_171: &install_dep_171
   - run:
       name: Install Dependencies with torch 1.7.1
       command: |
-        # make sure that apt-get retries if needed
-        sudo sh -c "echo 'APT::Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries"
-        sudo apt-get update -y
-        sudo apt-get install -y libopenmpi-dev
         # check if we have restored venv cache (/home/circleci/venv) correctly, if so, just skip
         if [ -f /home/circleci/venv/check_version.py ]; then python /home/circleci/venv/check_version.py torch eq 1.7 && exit 0; fi
         # start installing
         pip install --progress-bar off torch==1.7.1+cu110 torchvision==0.8.2+cu110 -f https://download.pytorch.org/whl/torch_stable.html
         pip install --progress-bar off -r requirements-test.txt
         pip install --progress-bar off -r requirements-benchmarks.txt
-        pip install --progress-bar off git+https://github.com/msbaines/torch_pg.git@c85c96f#egg=torch-pg
         python -c 'import torch; print("Torch version:", torch.__version__)'
         python -c 'import torch; assert torch.__version__.split(".")[:2] == ["1", "7"], "wrong torch version"'
         python -m torch.utils.collect_env
         wget -O /home/circleci/venv/check_version.py https://raw.githubusercontent.com/min-xu-ai/check_verion/main/check_version.py
 
-install_dep_180: &install_dep_180
+install_dep_181: &install_dep_181
   - run:
-      name: Install Dependencies with torch 1.8.0
+      name: Install Dependencies with torch 1.8.1
       command: |
-        # make sure that apt-get retries if needed
-        sudo sh -c "echo 'APT::Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries"
-        sudo apt-get update -y
-        sudo apt-get install -y libopenmpi-dev
         # check if we have restored venv cache (/home/circleci/venv) correctly, if so, just skip
         if [ -f /home/circleci/venv/check_version.py ]; then python /home/circleci/venv/check_version.py torch eq 1.8 && exit 0; fi
         # start installing
-        pip install --progress-bar off torch==1.8.0+cu101 torchvision==0.9.0+cu101 -f https://download.pytorch.org/whl/torch_stable.html
+        pip install --progress-bar off torch==1.8.1+cu101 torchvision==0.9.1+cu101 -f https://download.pytorch.org/whl/torch_stable.html
         pip install --progress-bar off -r requirements-test.txt
         pip install --progress-bar off -r requirements-benchmarks.txt
         python -c 'import torch; print("Torch version:", torch.__version__)'
         python -c 'import torch; assert torch.__version__.split(".")[:2] == ["1", "8"], "wrong torch version"'
+        python -m torch.utils.collect_env
+        wget -O /home/circleci/venv/check_version.py https://raw.githubusercontent.com/min-xu-ai/check_verion/main/check_version.py
+
+install_dep_190: &install_dep_190
+  - run:
+      name: Install Dependencies with torch 1.9.0
+      command: |
+        # check if we have restored venv cache (/home/circleci/venv) correctly, if so, just skip
+        if [ -f /home/circleci/venv/check_version.py ]; then python /home/circleci/venv/check_version.py torch eq 1.8 && exit 0; fi
+        # start installing
+        pip install --pre --progress-bar off torch==1.9.0.dev20210330+cu101 torchvision==0.10.0.dev20210330+cu101 -f https://download.pytorch.org/whl/nightly/cu101/torch_nightly.html
+        pip install --progress-bar off -r requirements-test.txt
+        pip install --progress-bar off -r requirements-benchmarks.txt
+        python -c 'import torch; print("Torch version:", torch.__version__)'
+        python -c 'import torch; assert torch.__version__.split(".")[:2] == ["1", "9"], "wrong torch version"'
         python -m torch.utils.collect_env
         wget -O /home/circleci/venv/check_version.py https://raw.githubusercontent.com/min-xu-ai/check_verion/main/check_version.py
 
@@ -159,36 +161,22 @@ check_test_list: &check_test_list
         bash ./tests/ci_test_list_check.sh
 
 
-# TODO (Min): figure out how to do coverage nightly or on-demand. Doing it
-# on every commit seems like an overkill since we can easily figure out which
-# code is not covered without looking at coverage results from each commit.
-# Also, it is a long pole for testing time, which slows down development a lot.
-run_coverage: &run_coverage
-  - run:
-      name: Run Unit Tests With Coverage
-      command: |
-        pytest --junitxml=test-results/junit.xml --verbose --timeout 60 --cov-report=xml --cov=./
-        #Uploading test coverage for Python code
-        bash <(curl -s https://codecov.io/bash) -f coverage.xml -cF Python
+upload_coverage: &upload_coverage
+  - codecov/upload:
+      file: 'coverage.xml'
+      token: $CODECOV_TOKEN
 
-run_mpi_unittests: &run_mpi_unittests
+run_offload_benchmark: &run_offload_benchmark
   - run:
-      name: Run MPI Unit Tests
+      name: Run Offload Benchmark
       command: |
-        mpirun -n 4 python -m pytest -p torch_pg.pytest --only-mpi --junitxml=test-results/junit.xml --verbose tests/nn/moe
-
+        python benchmarks/experimental/offload.py
 
 run_pipe_benchmark: &run_pipe_benchmark
   - run:
       name: Run Pipe Benchmark
       command: |
         python benchmarks/pipe.py
-
-run_mp_pipe_benchmark: &run_mp_pipe_benchmark
-  - run:
-      name: Run Multiprocess Pipe Benchmark
-      command: |
-        python benchmarks/pipe.py --multiprocess --lazy-construction
 
 run_oss_benchmark: &run_oss_benchmark
   - run:
@@ -233,7 +221,7 @@ run_unittests: &run_unittests
        name: Run all unit tests.
        # We run all and not stopping on failure on CPU since docker time is cheaper.
        command: |
-         pytest --junitxml=test-results/junit.xml --verbose --timeout 60
+         pytest --junitxml=test-results/junit.xml --verbose --timeout 60 --cov-report=xml --cov=./
 
 commands:
 
@@ -249,7 +237,7 @@ commands:
            name: Run Unit Tests
            command: |
              if [ ! -f <<parameters.test_list_file>> ]; then exit 1; fi
-             pytest --junitxml=test-results/junit.xml --verbose --timeout 60 `cat <<parameters.test_list_file>>`
+             pytest --junitxml=test-results/junit.xml --verbose --timeout 60 --cov-report=xml --cov=./ `cat <<parameters.test_list_file>>`
 
 # -------------------------------------------------------------------------------------
 # Jobs to run
@@ -269,14 +257,14 @@ jobs:
       # Cache the venv directory that contains dependencies
       - restore_cache:
           keys:
-            - cache-key-cpu-py37-180-1-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+            - cache-key-cpu-py37-181-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
-      - <<: *install_dep_171
+      - <<: *install_dep_181
 
       - save_cache:
           paths:
             - ~/venv
-          key: cache-key-cpu-py37-180-1-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+          key: cache-key-cpu-py37-181-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
       - <<: *install_repo
 
@@ -285,7 +273,6 @@ jobs:
       - <<: *run_mypy
       - <<: *run_flake8
       - <<: *run_unittests
-      - <<: *run_mpi_unittests
       - <<: *run_doc_build
 
       - store_test_results:
@@ -304,13 +291,13 @@ jobs:
       # Cache the venv directory that contains dependencies
       - restore_cache:
           keys:
-            - cache-key-cpu-py38-180-1-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
-      - <<: *install_dep_171
+            - cache-key-cpu-py38-181-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+      - <<: *install_dep_181
 
       - save_cache:
           paths:
             - ~/venv
-          key: cache-key-cpu-py38-180-1-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+          key: cache-key-cpu-py38-181-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
       - <<: *install_repo
 
@@ -319,7 +306,6 @@ jobs:
       - <<: *run_mypy
       - <<: *run_flake8
       - <<: *run_unittests
-      - <<: *run_mpi_unittests
       - <<: *run_doc_build
 
       - store_test_results:
@@ -338,18 +324,14 @@ jobs:
       # Cache the venv directory that contains dependencies
       - restore_cache:
           keys:
-            - cache-key-cpu-py39-180-4-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+            - cache-key-cpu-py39-181-0-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
-      # py3.9 doesn't work well with torch < 1.8. See this PR:
-      # https://github.com/pytorch/pytorch/pull/50998
-      #
-      # Therefore, we test py39 with torch 1.8.0.
-      - <<: *install_dep_180
+      - <<: *install_dep_181
 
       - save_cache:
           paths:
             - ~/venv
-          key: cache-key-cpu-py39-180-4-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+          key: cache-key-cpu-py39-181-0-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
       - <<: *install_repo
 
@@ -358,7 +340,6 @@ jobs:
       - <<: *run_mypy
       - <<: *run_flake8
       - <<: *run_unittests
-      # TODO(msb) - <<: *run_mpi_unittests
       - <<: *run_doc_build
 
       - store_test_results:
@@ -404,6 +385,8 @@ jobs:
       - store_test_results:
           path: test-results
 
+      - <<: *upload_coverage
+
   gpu_tests_171:
     parameters:
       test_list_file:
@@ -444,7 +427,9 @@ jobs:
       - store_test_results:
           path: test-results
 
-  gpu_tests_180:
+      - <<: *upload_coverage
+
+  gpu_tests_181:
     parameters:
       test_list_file:
         type: string
@@ -467,14 +452,56 @@ jobs:
       # Cache the venv directory that contains dependencies
       - restore_cache:
           keys:
-            - cache-key-gpu-180-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+            - cache-key-gpu-181-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
-      - <<: *install_dep_180
+      - <<: *install_dep_181
 
       - save_cache:
           paths:
             - ~/venv
-          key: cache-key-gpu-180-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+          key: cache-key-gpu-181-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+
+      - <<: *install_repo
+
+      - run_unittests_from_list:
+          test_list_file: <<parameters.test_list_file>>
+
+      - store_test_results:
+          path: test-results
+
+      - <<: *upload_coverage
+
+  gpu_tests_190:
+    parameters:
+      test_list_file:
+        type: string
+        default: "/dev/non_exist"
+
+    <<: *gpu
+
+    working_directory: ~/fairscale
+
+    steps:
+      - checkout
+
+      - run: nvidia-smi
+
+      # Run this to make sure we use python3 from the system.
+      - run: pyenv global 3.7.0
+
+      - <<: *setup_venv
+
+      # Cache the venv directory that contains dependencies
+      - restore_cache:
+          keys:
+            - cache-key-gpu-190-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+
+      - <<: *install_dep_190
+
+      - save_cache:
+          paths:
+            - ~/venv
+          key: cache-key-gpu-190-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
       - <<: *install_repo
 
@@ -505,25 +532,25 @@ jobs:
       # Cache the venv directory that contains dependencies
       - restore_cache:
           keys:
-            - cache-key-benchmarks-180-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+            - cache-key-benchmarks-181-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
       # Cache the MNIST directory that contains benchmark data
       - restore_cache:
           keys:
             - cache-key-benchmark-MNIST-{{ checksum "benchmarks/datasets/mnist.py"}}
 
-      - <<: *install_dep_180
+      - <<: *install_dep_181
 
       - save_cache:
           paths:
             - ~/venv
-          key: cache-key-benchmarks-180-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+          key: cache-key-benchmarks-181-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
       - <<: *install_repo
 
       - <<: *run_pipe_benchmark
 
-      - <<: *run_mp_pipe_benchmark
+      - <<: *run_offload_benchmark
 
       - <<: *run_oss_amp
 
@@ -557,7 +584,7 @@ jobs:
       # Cache the venv directory that contains dependencies
       - restore_cache:
           keys:
-            - cache-key-benchmarks-180-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+            - cache-key-benchmarks-181-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
 
       # Cache the MNIST directory that contains benchmark data
@@ -565,12 +592,12 @@ jobs:
           keys:
             - cache-key-benchmark-MNIST-{{ checksum "benchmarks/datasets/mnist.py"}}
 
-      - <<: *install_dep_180
+      - <<: *install_dep_181
 
       - save_cache:
           paths:
             - ~/venv
-          key: cache-key-benchmarks-180-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+          key: cache-key-benchmarks-181-101-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
       - <<: *install_repo
 
@@ -593,19 +620,25 @@ workflows:
           test_list_file: tests/ci_test_list_1.txt
       - gpu_tests_171:
           test_list_file: tests/ci_test_list_1.txt
-      - gpu_tests_180:
+      - gpu_tests_181:
+          test_list_file: tests/ci_test_list_1.txt
+      - gpu_tests_190:
           test_list_file: tests/ci_test_list_1.txt
       - gpu_tests_160:
           test_list_file: tests/ci_test_list_2.txt
       - gpu_tests_171:
           test_list_file: tests/ci_test_list_2.txt
-      - gpu_tests_180:
+      - gpu_tests_181:
+          test_list_file: tests/ci_test_list_2.txt
+      - gpu_tests_190:
           test_list_file: tests/ci_test_list_2.txt
       - gpu_tests_160:
           test_list_file: tests/ci_test_list_3.txt
       - gpu_tests_171:
           test_list_file: tests/ci_test_list_3.txt
-      - gpu_tests_180:
+      - gpu_tests_181:
+          test_list_file: tests/ci_test_list_3.txt
+      - gpu_tests_190:
           test_list_file: tests/ci_test_list_3.txt
       - benchmarks_1
       - benchmarks_2

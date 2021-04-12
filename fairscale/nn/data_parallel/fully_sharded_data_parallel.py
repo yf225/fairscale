@@ -8,6 +8,7 @@ import copy
 from enum import Enum, auto
 import functools
 from math import inf
+import time
 import traceback
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, NamedTuple, Optional, Set, Tuple, Union
 
@@ -21,11 +22,13 @@ import torch.nn.functional as F
 
 from fairscale.nn.misc import FlattenParamsWrapper
 from fairscale.nn.wrap import auto_wrap, default_auto_wrap_policy, enable_wrap
-from fairscale.optim.utils import calc_grad_norm
+from fairscale.optim.utils import broadcast_object, calc_grad_norm, recursive_copy_to_device
 from fairscale.utils.containers import apply_to_tensors
 from fairscale.utils.parallel import chunk_and_pad, enable_pytorch_sync_bn, validate_process_group
 from fairscale.utils.reduce_scatter_bucketer import ReduceScatterBucketer
 from fairscale.utils.state_dict import replace_by_prefix_
+
+from . import fsdp_optim_utils as ou
 
 if TYPE_CHECKING:
     from collections import OrderedDict  # noqa: F401
@@ -88,8 +91,8 @@ class FullyShardedDataParallel(nn.Module):
         import torch
         from fairscale.nn.auto_wrap import enable_wrap, auto_wrap
         from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
-        fsdp_params = dict(mixed_precision=True, flatten_parameters=True)
-        with enable_wrap(wrapper_cls=FSDP, **fsdp_params):
+        fsdp_params = dict(wrapper_cls=FSDP, mixed_precision=True, flatten_parameters=True)
+        with enable_wrap(**fsdp_params):
             # Wraps layer in FSDP by default if within context
             self.l1 = wrap(torch.nn.Linear(5, 5))
             assert isinstance(self.l1, FSDP)
@@ -155,6 +158,16 @@ class FullyShardedDataParallel(nn.Module):
             device, the param's device will be used. If not given and module
             params are on CPU, then the current CUDA device (as indicated by
             ``torch.cuda.current_device()`` will be used.
+        no_broadcast_optim_state: (bool, Optional)
+            do not broadcast this modules optimizer state when ``gather_full_optim_state_dict`` is called.
+            If you set this true, you are expected to overwrite the relevant state entries of the returned optimizer state dict
+            with the proper state at each rank. This is useful for situations, like Mixture Of Experts,
+            where all but a few parameters can fit on one node.
+            Default: False
+        state_dict_device (torch.device, Optional):
+            device for parameters returned by :func:`state_dict`. If not given,
+            this will default to ``compute_dtype``. Note that only the device
+            type will be respected (e.g., "cuda:0" and "cuda:1" are the same).
     """
 
     def __init__(
@@ -171,6 +184,8 @@ class FullyShardedDataParallel(nn.Module):
         move_grads_to_cpu: Optional[bool] = None,
         bucket_cap_mb: int = 25,
         compute_device: Optional[torch.device] = None,
+        no_broadcast_optim_state: Optional[bool] = False,
+        state_dict_device: Optional[torch.device] = None,
     ):
         super().__init__()
         self.process_group = process_group or dist.new_group()
@@ -185,19 +200,21 @@ class FullyShardedDataParallel(nn.Module):
         self.buffer_dtype = buffer_dtype or self.compute_dtype
         self.move_grads_to_cpu = cpu_offload if move_grads_to_cpu is None else move_grads_to_cpu
         self.bucket_cap_mb = bucket_cap_mb
-        self.compute_device = compute_device
+        self.compute_device = compute_device or _get_default_cuda_device(module)
+        self.uncollected_opt_state: Dict[int, Dict] = {}
+        self.no_broadcast_optim_state = no_broadcast_optim_state
+        self.state_dict_device = state_dict_device or self.compute_device
+
+        self.gradient_predivide_factor: int = self.get_gradient_predivide_factor(self.world_size)
+        self.gradient_postdivide_factor: float = self.world_size / self.gradient_predivide_factor
+
+        self.numel_padded_per_param: List[int] = []
+        self._tstart = time.time()
 
         if self.fp32_reduce_scatter and not self.mixed_precision:
             raise ValueError("fp32_reduce_scatter requires mixed_precision=True")
         if self.cpu_offload and not self.mixed_precision:
             raise ValueError("cpu_offload requires mixed_precision=True")
-
-        if self.compute_device is None:
-            # Try to infer CUDA device from module parameters.
-            self.compute_device = next(module.parameters()).device
-            if self.compute_device.type != "cuda":
-                # Fall back to current CUDA device.
-                self.compute_device = torch.device("cuda")
 
         validate_process_group(self.compute_device, self.process_group)
         enable_pytorch_sync_bn(module)
@@ -247,6 +264,12 @@ class FullyShardedDataParallel(nn.Module):
         # full params. This defaults to True, but may be set to False if the
         # user explicitly requests the local state dict via local_state_dict().
         self._return_full_state_dict = True
+
+    def get_gradient_predivide_factor(self, world_size: int) -> int:
+        factor = 1
+        while world_size % factor == 0 and world_size / factor > factor:
+            factor = factor * 2
+        return factor
 
     @property
     def module(self) -> nn.Module:
@@ -412,6 +435,7 @@ class FullyShardedDataParallel(nn.Module):
         allocate less memory for optimizer state, avoiding redundancy across
         data parallel workers.
         """
+        self.numel_padded_per_param = []
         for p in self.params:
             assert not hasattr(p, "_is_sharded")
             assert p.is_floating_point()
@@ -423,16 +447,19 @@ class FullyShardedDataParallel(nn.Module):
             p._orig_size = p.data.size()
 
             if not p._is_sharded:
+                self.numel_padded_per_param.append(0)
                 continue
             p._is_sharded = True
 
             # Replace p.data with the relevant shard.
             orig_data = p.data
-            p.data = self._get_shard(p.data)
+            p.data, num_padded = self._get_shard(p.data)
+            self.numel_padded_per_param.append(num_padded)
             free_storage_(orig_data)
+        assert len(self.numel_padded_per_param) == len(self.params)
 
-    def _get_shard(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Return the local shard of a given full tensor."""
+    def _get_shard(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, int]:
+        """Return the local shard of a full tensor."""
         # Shard using torch.chunk to match all-gather/reduce-scatter.
         chunks = list(torch.flatten(tensor).chunk(self.world_size))
         while len(chunks) < self.world_size:
@@ -445,7 +472,7 @@ class FullyShardedDataParallel(nn.Module):
         shard = chunks[self.rank].clone()
         if num_to_pad > 0:
             shard = F.pad(shard, [0, num_to_pad])
-        return shard
+        return shard, num_to_pad
 
     def extra_repr(self) -> str:
         return (
@@ -520,7 +547,7 @@ class FullyShardedDataParallel(nn.Module):
 
         if self._return_full_state_dict:
             if self.training_state != TrainingState.SUMMON_FULL_PARAMS:
-                with self.summon_full_params(volatile=True):
+                with self.summon_full_params(recurse=False, volatile=True):
                     state_dict = super().state_dict(*args, **kwargs)
             else:
                 state_dict = super().state_dict(*args, **kwargs)
@@ -684,7 +711,7 @@ class FullyShardedDataParallel(nn.Module):
                         if not volatile:
                             # Copy any changes made to the full params back into
                             # the corresponding local shards.
-                            local_shard = self._get_shard(full_tensor)
+                            local_shard, _ = self._get_shard(full_tensor)
                             p._fp32_shard.copy_(local_shard.view_as(p._fp32_shard))
                         if safe_to_free:
                             free_storage_(full_tensor)
@@ -832,6 +859,12 @@ class FullyShardedDataParallel(nn.Module):
                     m._queue_wait_for_post_backward_closure = self._queue_wait_for_post_backward
                 if m.process_group != self.process_group:
                     self.children_share_process_group = False
+
+                # if child instance in its own (smaller) world, that was probably an attempt to avoid OOM.
+                # Therefore gathering this child's optim state will probably cause OOM, so we won't do it.
+                m.no_broadcast_optim_state = m.no_broadcast_optim_state or (
+                    (m.world_size == 1) and (m.world_size < self.world_size) and (m.process_group != self.process_group)
+                )
 
     def _setup_streams(self) -> None:
         """Create streams to overlap data transfer and computation."""
@@ -1061,9 +1094,9 @@ class FullyShardedDataParallel(nn.Module):
                 # Cast grad to FP32.
                 param.grad.data = param.grad.data.to(param.dtype)
 
-            if self.world_size > 1:
+            if self.gradient_predivide_factor > 1:
                 # Average grad by world_size for consistency with PyTorch DDP.
-                param.grad.data.div_(self.world_size)
+                param.grad.data.div_(self.gradient_predivide_factor)
 
             callback_fn = functools.partial(self._post_reduction_hook, param)
             if param._is_sharded:
@@ -1091,6 +1124,9 @@ class FullyShardedDataParallel(nn.Module):
         assert param.grad is not None
         self.assert_state(TrainingState.BACKWARD_POST)
         param.grad.data = reduced_grad
+        if self.gradient_postdivide_factor > 1:
+            # Average grad by world_size for consistency with PyTorch DDP.
+            param.grad.data.div_(self.gradient_postdivide_factor)
         # Cast grad to param's dtype (typically FP32). Note: we do this
         # before the move_grads_to_cpu step so that this entire hook remains
         # non-blocking. The downside is a bit more D2H transfer in that case.
@@ -1346,6 +1382,146 @@ class FullyShardedDataParallel(nn.Module):
                 traceback.print_stack()
             raise ValueError(msg)
 
+    def _consolidate_optim_state_dict(
+        self, optim: torch.optim.Optimizer, recipient_rank: Optional[int] = None
+    ) -> List[Dict]:
+        """Update the consolidated state_dict list, one per rank.
+
+        Args:
+
+            optim (Optimizer): an optimizer instance for this FSDP rank. Its state is
+            used in the consolidation. However, its state is not modified.
+            recipient_rank (int): on which rank to materialize the full state dict.
+            None is a special value, which means that all ranks should have the state
+
+        Returns:
+            all_states (list[dict]) the optimizer state from each rank
+
+
+        .. warning: This needs to be called on all replicas"""
+        self._lazy_init()
+        # NOTE(SS): we do not support param groups yet, as they seem to break FSDP
+        # Pull the sharded state from all the other replicas
+        # Store all the states in order, rank by rank
+        should_collect_state = recipient_rank is None or (self.rank == recipient_rank)
+        all_states: List[Dict[str, Any]] = []
+        dummy_tensor = torch.tensor([0], dtype=torch.uint8, device=self.compute_device)
+        for rank in range(self.world_size):
+            if rank == self.rank:
+                sd = self._remove_uncollectable_params_from_optim_state_dict(optim.state_dict())
+                sd["num_padded"] = [m.numel_padded_per_param for m in self._fsdp_instances]
+            else:
+                sd = dummy_tensor  # type: ignore
+            sd = broadcast_object(sd, src_rank=rank, group=self.process_group, dist_device=self.compute_device)
+            if should_collect_state:
+                assert isinstance(sd, dict), f"{self.rank} received {type(sd)} from {rank}, expected dict"
+                all_states.append(recursive_copy_to_device(sd, non_blocking=False, device=torch.device("cpu")))
+        return all_states
+
+    def gather_full_optim_state_dict(
+        self, optim: torch.optim.Optimizer, recipient_rank: Optional[int] = 0
+    ) -> Optional[Dict[str, Any]]:
+        """Return the last known global optimizer state. The returned state is compatible with Pytorch, in that the
+        sharded properties are not exposed. Multiple parameter groups are not yet supported.
+
+        This should be called only on the root FSDP instance.
+
+        Different world_size groups in nested FSDP instances is not supported.
+        Args:
+                    optim (Optimizer): an optimizer instance for this FSDP rank. Its state is
+                    used in the consolidation. However, its state is not modified.
+                    recipient_rank (int): on which rank to materialize the full state dict.
+
+        Returns:
+            a dict with two entries
+                * state - a dict holding gathered optimization state, 1 entry per unflat parameter
+                * param_groups - a dict containing the 1 parameter group
+
+        """
+        if not self.flatten_parameters:
+            raise NotImplementedError("optim state dict requires flatten_parameters=True")
+        world_optim_states = self._consolidate_optim_state_dict(optim, recipient_rank)
+        if self.rank != recipient_rank and recipient_rank is not None:
+            return None
+        # Unify the shard states by concatenating tensors and unflattening params
+        new_state_dict = ou.build_unflat_state_dict(
+            self._fsdp_instances, world_optim_states, self.uncollected_opt_state
+        )
+        self.uncollected_opt_state = {}
+        assert "uncollected_local_ids" in new_state_dict
+        return new_state_dict
+
+    @property
+    def _fsdp_instances(self) -> List[nn.Module]:
+        """Returns all fsdp modules in self.modules() including self."""
+        return [m for m in self.modules() if isinstance(m, FullyShardedDataParallel)]
+
+    def _remove_uncollectable_params_from_optim_state_dict(self, osd: Dict) -> Dict:
+        uncollected_ids = [i for i, m in enumerate(self._fsdp_instances) if m.no_broadcast_optim_state]
+        new_dct = {"state": {k: v for k, v in osd["state"].items() if k not in uncollected_ids}}
+        if self.rank == 0:
+            # Save placeholders for uncollected opt state to keep the same unflat OSD format, and move them to CPU.
+            self.uncollected_opt_state = {
+                k: recursive_copy_to_device(v, non_blocking=False, device=torch.device("cpu"))
+                for k, v in osd["state"].items()
+                if k in uncollected_ids
+            }
+
+        pg = copy.deepcopy(osd["param_groups"])
+        new_dct["param_groups"] = pg
+        return new_dct
+
+    def get_shard_from_optim_state_dict(self, full_optim_state_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Get the portion of the optimizer state dict associated with the shard
+
+        This can be used to get the right sharded optimizer state to be loaded
+        into the sharded optimizer for this FSDP rank.
+
+        Args:
+            full_optim_state_dict (dict): consolidated optimizer state returned by ``gather_full_optim_state``, or loaded from a checkpoint.
+
+        Returns:
+            (dict): a shard of the optimizer state.
+        """
+        # Assert nesting is the same as it was at save time
+        instance_list = self._fsdp_instances
+        ou.check_param_counts_before_sharding(full_optim_state_dict, len(instance_list))
+        ids_not_to_shard = copy.deepcopy(full_optim_state_dict["uncollected_local_ids"])
+        if self.flatten_parameters:
+            full_optim_state_dict = ou.flatten_optim_state_dict(full_optim_state_dict)
+            assert len(full_optim_state_dict["state"]) in (
+                0,
+                len(instance_list),
+            ), f'{len(full_optim_state_dict["state"])}, {len(instance_list)}'
+
+        # get the portion of dict associated with the shard, in place
+        for id, s in full_optim_state_dict["state"].items():
+            for k, v in s.items():
+                if torch.is_tensor(v) and id not in ids_not_to_shard:
+                    v_shard, _ = self._get_shard(v)
+                else:
+                    v_shard = v  # dont shard entries that are not tensors
+                full_optim_state_dict["state"][id][k] = v_shard
+
+        return full_optim_state_dict
+
+    def _print_r0(self, msg: str) -> None:
+        """Debugging utility to print memory usage stats nicely on rank 0"""
+        if self.rank == 0:
+            gb_denom = 1024 ** 3
+            print(
+                f"{msg} cur={torch.cuda.memory_allocated()/gb_denom: .4f} GB, max={torch.cuda.max_memory_allocated()/gb_denom: .4f} GB, t={time.time()-self._tstart: .1f}"
+            )
+
+
+def _get_default_cuda_device(module: nn.Module) -> torch.device:
+    """Try to infer CUDA device from module parameters."""
+    compute_device = next(module.parameters()).device
+    if compute_device.type != "cuda":
+        # Fall back to current CUDA device.
+        compute_device = torch.device("cuda")
+    return compute_device
+
 
 @torch.no_grad()
 def cast_inputs_to_fp16(*args: Any, **kwargs: Any) -> Tuple[Any, Any]:
@@ -1380,13 +1556,25 @@ def alloc_storage_(data: torch.Tensor, size: torch.Size) -> None:
 
 
 def _post_state_dict_hook(
-    module: nn.Module, state_dict: "OrderedDict[str, torch.Tensor]", prefix: str, *args: Any
+    module: FullyShardedDataParallel, state_dict: "OrderedDict[str, torch.Tensor]", prefix: str, *args: Any
 ) -> "OrderedDict[str, torch.Tensor]":
-    if module.training_state == TrainingState.SUMMON_FULL_PARAMS:
-        # We copy the state_dict since full param will be freed after
-        # we exit the summon_full_params() context.
-        for key in state_dict.keys():
+    # Assuming we are in a ``summon_full_params()`` context, we need to clone
+    # each tensor so that it does not get freed (in-place) when the context
+    # exits. At the same time, this hook can be called multiple times
+    # recursively, so we need to make sure that we only clone each tensor at
+    # mostonce. Thus we add an attribute on the tensor called "_has_been_cloned"
+    # which keeps track of tensors that are no longer at risk of being freed.
+    for key in state_dict.keys():
+        if not key.startswith(prefix) or getattr(state_dict[key], "_has_been_cloned", False):
+            continue
+        if state_dict[key].device.type != module.state_dict_device.type:
+            state_dict[key] = state_dict[key].to(device=module.state_dict_device)
+            state_dict[key]._has_been_cloned = True
+        elif module.training_state == TrainingState.SUMMON_FULL_PARAMS:
+            # We copy the state_dict since full param will be freed after we
+            # exit the ``summon_full_params()`` context.
             state_dict[key] = state_dict[key].clone()
+            state_dict[key]._has_been_cloned = True
 
     # Remove "_fsdp_wrapped_module." prefix
     replace_by_prefix_(state_dict, prefix + "_fsdp_wrapped_module.", prefix)
@@ -1404,7 +1592,7 @@ def _pre_load_state_dict_hook(
 ########################################################################################
 
 
-def auto_wrap_bn(module: nn.Module) -> nn.Module:
+def auto_wrap_bn(module: nn.Module, single_rank_pg: bool = False) -> nn.Module:
     """
     Auto wrap all BatchNorm (BN) instances with a safer FSDP, esp. when convert
     to sync BN is used and the outer FSDP is flattening.
@@ -1418,6 +1606,9 @@ def auto_wrap_bn(module: nn.Module) -> nn.Module:
     Args:
         module (nn.Module):
             The model (or part of the model) in which BN to be pre-wrapped.
+        single_rank_pg (bool):
+            If true, put BNs in a single-rank process group. Default False.
+            This might be needed for Apex sync BN support. Still under construction.
 
     Returns:
         Processed module, where BNs are wrapped with a special FSDP instance.
@@ -1430,10 +1621,15 @@ def auto_wrap_bn(module: nn.Module) -> nn.Module:
         else:
             return is_bn and not isinstance(module, tuple(default_auto_wrap_policy.EXCLUDE_WRAP_MODULES))  # type: ignore
 
-    my_rank = dist.get_rank()
+    pg = None
+    if single_rank_pg:
+        # No sharding with this single member group.
+        my_rank = dist.get_rank()
+        pg = dist.new_group(ranks=[my_rank])
+
     fsdp_config = {
         "wrapper_cls": FullyShardedDataParallel,
-        "process_group": dist.new_group(ranks=[my_rank]),  # No sharding with this single member group.
+        "process_group": pg,
         "mixed_precision": False,  # Keep the weights in FP32.
         "flatten_parameters": False,  # Do not flatten.
     }
