@@ -16,7 +16,7 @@ class Offload_Transformer:
             "initrange": 0.1,
             "scaler": GradScaler(),
             "clip_value": 0.05,
-            "num_decoder_layers": 70,
+            "num_decoder_layers": 250,
             "seq_len": 32,
         }
 
@@ -29,7 +29,7 @@ class Offload_Transformer:
             "criterion": nn.CrossEntropyLoss(),
             "checkpoint_activation": True,
             "num_microbatches": 1,
-            "slices": 1,
+            "slices": 5,
         }
 
 
@@ -39,7 +39,7 @@ class Offload_Sequential:
             "inputs": 100,
             "outputs": 5,
             "hidden": 1000,
-            "layers": 100,
+            "layers": 1780,
             "clip_value": 0.05,
         }
 
@@ -52,7 +52,7 @@ class Offload_Sequential:
             "criterion": nn.CrossEntropyLoss(),
             "slices": 3,
             "checkpoint_activation": True,
-            "num_microbatches": 4,
+            "num_microbatches": 1,
         }
 
 

@@ -119,10 +119,15 @@ def train_seq(model_config, benchmark_config, model_specs, args):
     criterion = benchmark_config["criterion"]
     optimizer = model_config["optimizer"](model.parameters(), lr=benchmark_config["lr"])
     dataloader, _, _ = model_config["data"]
-
-    def train_epoch(args):
+    print(f"model_specs {model_specs}")
+    print(f"benchmark_config {benchmark_config}")
+    
+    def train_epoch(args, iter=5):
         model.train()
         for batch_inputs, batch_outputs in dataloader:
+            iter -= 1
+            if iter == 0:
+                break
             batch_inputs, batch_outputs = batch_inputs.to("cuda"), batch_outputs.to("cuda")
             start = time.time_ns()
             with _get_profiler_context(args.use_profiler) as prof:
@@ -131,7 +136,6 @@ def train_seq(model_config, benchmark_config, model_specs, args):
                 with _get_profiler_record_context("model_training", args.use_profiler):
                     with _get_fp16_context(use_fp16=args.use_fp16):
                         output = model(inputs)
-                        print(f"output grad_fn {output.grad_fn}")
                         loss = criterion(output, target=batch_outputs)
                         loss.backward()
                     optimizer.step()

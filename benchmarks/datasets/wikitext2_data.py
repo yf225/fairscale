@@ -30,7 +30,7 @@ def get_real_dataloaders(args, benchmark_config, model_specs):
 
     url = "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-2-v1.zip"
     tmpdir = tempfile.TemporaryDirectory()
-    test_filepath, valid_filepath, train_filepath = extract_archive(download_from_url(url, root=tmpdir.name))
+    test_filepath, valid_filepath, train_filepath = extract_archive(download_from_url(url))
     tokenizer = get_tokenizer("basic_english")
 
     def data_process(raw_text_iter):
