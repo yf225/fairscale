@@ -15,7 +15,7 @@ class Offload_Transformer:
             "dropout": 0,
             "initrange": 0.1,
             "clip_value": 0.05,
-            "num_decoder_layers": 50,
+            "num_decoder_layers": 450,
             "seq_len": 32,
         }
 
@@ -23,12 +23,12 @@ class Offload_Transformer:
 
         return {
             "epochs": 1,
-            "lr": 0.001,  # learning rate
-            "batch_size": 8,
+            "lr": 0.01,  # learning rate
+            "batch_size": 256,
             "criterion": nn.CrossEntropyLoss(),
-            "checkpoint_activation": False,
-            "num_microbatches": 1,
-            "slices": 3 ,
+            "checkpoint_activation": True,
+            "num_microbatches": 32,
+            "slices": 10,
         }
 
     def get_golden_real_stats():

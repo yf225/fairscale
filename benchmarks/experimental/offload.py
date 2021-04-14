@@ -285,7 +285,7 @@ def benchmark_language_model(model_config, model, benchmark_config, model_specs,
         verify_peak_memory(golden_config, 1.1)
     else:
         print("Throughput(wps) is {:.2f}.".format(wps))
-        print("Peak allocated bytes on cuda:0: {:2f}".format(torch.cuda.memory_stats(0)["allocated_bytes.all.peak"]/2**30))
+        print("Peak allocated bytes on cuda:0: {:2f} GB".format(torch.cuda.memory_stats(0)["allocated_bytes.all.peak"]/2**30))
 
 
 def get_synthetic_dataloaders(args, device, benchmark_config, model_specs):
@@ -399,10 +399,8 @@ def run_benchmark(args):
         model_config = create_model_config(args, benchmark_config=benchmark_config, model_specs=model_specs)
         model = model_config["model"]
 
-        if args.dry_run:
-            train(model_config, model, benchmark_config, model_specs, args)
-        else:
-            benchmark_language_model(model_config, model, benchmark_config, model_specs, args)
+        
+        benchmark_language_model(model_config, model, benchmark_config, model_specs, args)
     elif args.model_name == "seq":
         benchmark_config = create_benchmark_config(args.model_name)
         model_specs = get_model_specs(args.model_name)
@@ -430,7 +428,6 @@ parser.add_argument(
     "--use_synthetic_data", default=False, action="store_true", help="Uses synthetic data for running benchmarks."
 )
 parser.add_argument("--use_fp16", action="store_true", default=False)
-parser.add_argument("--checkpoint_activation", action="store_true", default=True)
 parser.add_argument("--use_profiler", action="store_true", default=False)
 
 
