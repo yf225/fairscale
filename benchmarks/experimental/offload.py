@@ -48,14 +48,14 @@ def get_model_and_optimizer(args, device, benchmark_config, model_specs):
         model = get_seq_model(args, device, model_specs)
         optimizer = torch.optim.SGD
 
-    model = OffloadModel(
-        model=model,
-        device=torch.device("cuda"),
-        offload_device=torch.device("cpu"),
-        num_slices=benchmark_config["slices"],
-        checkpoint_activation=benchmark_config["checkpoint_activation"],
-        num_microbatches=benchmark_config["num_microbatches"],
-    )
+    # model = OffloadModel(
+    #     model=model,
+    #     device=torch.device("cuda"),
+    #     offload_device=torch.device("cpu"),
+    #     num_slices=benchmark_config["slices"],
+    #     checkpoint_activation=benchmark_config["checkpoint_activation"],
+    #     num_microbatches=benchmark_config["num_microbatches"],
+    # )
 
     return model, optimizer
 
