@@ -273,10 +273,10 @@ class PartitionHandler:
             result = microbatch.gather(pipeline_record.batches)
             assert len(result) == 1
             result = result[0]
-            s0 = current_stream(result.device)
-            if is_cuda(s0):
-                # TODO. Investigate why this is needed and remove it if possible.
-                as_cuda(s0).synchronize()
+            #s0 = current_stream(result.device)
+            #if is_cuda(s0):
+            #    # TODO. Investigate why this is needed and remove it if possible.
+            #    as_cuda(s0).synchronize()
 
         del pipeline_record.batches
         return result
