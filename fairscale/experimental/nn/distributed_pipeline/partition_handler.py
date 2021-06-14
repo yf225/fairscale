@@ -16,13 +16,11 @@ from fairscale.nn.pipe import microbatch
 from fairscale.nn.pipe.checkpoint import Checkpointing, TensorOrTensors
 from fairscale.nn.pipe.dependency import fork, join
 from fairscale.nn.pipe.microbatch import Batch
-from fairscale.nn.pipe.stream import as_cuda, current_stream, is_cuda, use_device, use_stream
-from fairscale.nn.pipe.worker import Task, create_workers
+from fairscale.nn.pipe.stream import AbstractStream, as_cuda, current_stream, is_cuda, use_device, use_stream, new_stream
 
 from .data import DataConsumer
 
 ExcInfo = Tuple[Type[BaseException], BaseException, TracebackType]
-
 
 class DistributedPipelineRecord:
     """ A class for storing a single mini-batch (consisting of multiple micro-batches) as input to
@@ -104,15 +102,16 @@ class DistributedPipelineRecord:
         # with this constraint, replace the condition 'self.rank > 0' below with
         # a more accurate one.
         if chunk != 0 and self.consumers and self.rank > 0:
-            dependant_tensors = []
             batch = self.batches[chunk]
             assert batch is not None
-            for tensor, remote_ph_list in zip(batch.tensors, self.forwarded_phony[chunk - 1]):
-                dependant = tensor
+            dependant_tensors = list(batch.tensors)
+            for remote_ph_list in self.forwarded_phony[chunk - 1]:
                 for remote_ph in remote_ph_list:
-                    phony = remote_ph.to_here()
-                    dependant = join(dependant, phony)
-                dependant_tensors.append(dependant)
+                    try:
+                        phony = remote_ph.to_here(timeout=10)
+                    except Exception as ex:
+                        raise Exception(f"to_here from {remote_ph.owner()}") from ex
+                    dependant_tensors[0] = join(dependant_tensors[0], phony)
             self.batches[chunk] = Batch(tuple(dependant_tensors), chunk)
 
     def sync_stream(self, chunk: int, stream: torch.cuda.Stream) -> None:
@@ -165,7 +164,7 @@ class PartitionHandler:
         self.rank = rank
         self.num_inputs = num_inputs
         self.num_outputs = num_outputs
-        (self.in_queue,), (self.out_queue,) = create_workers([self.device])
+        self.stream = new_stream(self.device)
 
     def local_parameter_rrefs(self) -> List[rpc.RRef]:
         r"""
@@ -183,17 +182,17 @@ class PartitionHandler:
         """Runs pipeline parallelism. It modifies the given batches in place."""
         m = len(pipeline_record.batches)
 
-        self.stream = current_stream(self.device)
+        stream = self.stream#current_stream(self.device)
 
         for chunk in range(m):
             with record_function("feed"):
                 pipeline_record.wait_for(chunk)
             pipeline_record.fence(chunk)
-            self.compute(pipeline_record, chunk)
-            with use_stream(self.stream):
+            self.compute(stream, pipeline_record, chunk)
+            with use_stream(stream):
                 pipeline_record.forward_results(chunk)
 
-    def compute(self, pipeline_record: DistributedPipelineRecord, chunk: int) -> None:
+    def compute(self, stream: AbstractStream, pipeline_record: DistributedPipelineRecord, chunk: int) -> None:
         """Runs tasks with synchronization to tensor-pipe streams."""
         checkpoint_stop = self.checkpoint_stop
 
@@ -205,14 +204,13 @@ class PartitionHandler:
 
         batch = pipeline_record.get_batch(chunk)
 
-        if is_cuda(self.stream):
-            pipeline_record.sync_stream(chunk, as_cuda(self.stream))
+        if is_cuda(stream):
+            pipeline_record.sync_stream(chunk, as_cuda(stream))
 
         # Determine whether checkpointing or not.
         checkpoint = chunk < checkpoint_stop
         if checkpoint:
-
-            def function(input: TensorOrTensors, chunk_id: int = chunk) -> TensorOrTensors:
+            def function(input: TensorOrTensors, chunk_id: int = chunk, rank=self.rank) -> TensorOrTensors:
                 with record_function("chunk%d-rank%d" % (chunk_id, pipeline_record.rank)):
                     result = self.module(*input)
                     if self.num_outputs is None:
@@ -220,44 +218,19 @@ class PartitionHandler:
                     return tuple(result)
 
             chk = Checkpointing(function, batch)
-            task = Task(self.stream, compute=chk.checkpoint, finalize=chk.recompute)
+            with use_stream(stream):
+               batch = chk.checkpoint()
+               chk.recompute(batch)
             del function, chk
-
         else:
+            with use_stream(stream), record_function("chunk%d-rank%d" % (chunk, pipeline_record.rank)):
+                result = self.module(*batch.tensors)
+                if self.num_outputs is None:
+                    result = (result,)
+            batch = Batch(result, chunk)
+        pipeline_record.batches[chunk] = batch
 
-            def compute(
-                batch: Batch = batch,
-                chunk_id: int = chunk,
-                rank: int = pipeline_record.rank if pipeline_record is not None else -1,
-            ) -> Batch:
-                with record_function("chunk%d-rank%d" % (chunk_id, pipeline_record.rank)):
-                    result = self.module(*batch.tensors)
-                    if self.num_outputs is None:
-                        result = (result,)
-                return Batch(result, chunk_id)
 
-            task = Task(self.stream, compute=compute, finalize=None)
-            del compute
-
-        self.in_queue.put(task)
-
-        ok, payload = self.out_queue.get()
-
-        # Hold the first exception.
-        if exc_info is not None:
-            pass
-        elif not ok:
-            exc_info = cast(ExcInfo, payload)
-        else:
-            task, batch = cast(Tuple[Task, Batch], payload)
-
-            with use_device(self.device):
-                task.finalize(batch)
-
-            pipeline_record.batches[chunk] = batch
-
-        if exc_info is not None:
-            raise exc_info[0].with_traceback(exc_info[1], exc_info[2])
 
     def run_pipeline(self, pipeline_record_rref: rpc.RRef) -> Optional[Tensor]:
         """Processes a min-batch on this partition.
