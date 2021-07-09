@@ -63,11 +63,5 @@ modules and easy to use APIs.
    :maxdepth: 1
    :caption: API Documentation
 
-   api/optim/adascale
-   api/optim/oss
-   api/nn/moe
-   api/nn/pipe
-   api/nn/sharded_ddp
-   api/nn/fsdp
-   api/nn/checkpoint/checkpoint_activations
-   api/experimental/nn/offload_model
+   api/index
+
