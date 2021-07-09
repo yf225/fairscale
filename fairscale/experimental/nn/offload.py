@@ -376,7 +376,7 @@ class ShardSyncLayer(torch.autograd.Function):
 class OffloadModel(nn.Module):
     """Wraps an arbitrary :class:`nn.Sequential <torch.nn.Sequential>` module
     to train by offloading majority of the model parameters to the CPU.
-    `OffloadModel` is heavily inspired by the L2L algorithm (https://arxiv.org/abs/2002.05645)
+    `OffloadModel` is heavily inspired by the `L2L algorithm <https://arxiv.org/abs/2002.05645>`_
     and Zero-Offload(https://arxiv.org/abs/2101.06840).
     
 
