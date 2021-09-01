@@ -41,9 +41,7 @@ class DistributedTest(unittest.TestCase):
         model_device = next(model.parameters()).device
         # use SGD with momentum instead of Adam, since Adam is scale invariant
         # and this makes it bad for tests
-        optim = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
         for _ in range(num_steps):
-            optim.zero_grad()
             with torch.cuda.amp.autocast(enabled=autocast):
                 # Inputs always cuda regardless of move_grads_cpu, or model.device
                 input = model.module.get_input(torch.device("cuda"))
@@ -57,9 +55,6 @@ class DistributedTest(unittest.TestCase):
                     model.clip_grad_norm_(clip_norm, norm_type)
                 else:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), clip_norm, norm_type)
-            # for name, param in model.named_parameters():
-            # print(f"name {name} param {param.device} {param.storage().size()}")
-            # optim.step()
         if isinstance(model, FullyShardedDataParallel):
             model.assert_state(TrainingState.IDLE)
         return loss.detach()
