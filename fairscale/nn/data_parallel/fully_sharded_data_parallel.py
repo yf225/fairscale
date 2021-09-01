@@ -374,10 +374,9 @@ class FullyShardedDataParallel(nn.Module):
         # Flag to indicate whether state_dict() should automatically summon the
         # full params. This defaults to True, but may be set to False if the
         # user explicitly requests the local state dict via local_state_dict().
-        if self.ssd_offload:
-            self._return_full_state_dict = False
-        else:
-            self._return_full_state_dict = True
+        # TODO(anj): This should by default be set to False for ssd_offload=True
+        # unless we are in the summon_full_params context.
+        self._return_full_state_dict = True
         init_end = time.time()
 
         logging.debug(
@@ -1535,14 +1534,6 @@ class FullyShardedDataParallel(nn.Module):
             ``force_full_precision=False`` and the full params are already gathered.
         """
         output_tensors: List[Tuple[torch.Tensor, bool]] = []
-
-        if self.ssd_offload:
-            # The params are on disk and need to be moved to the CPU.
-            for p in self.params:
-                alloc_storage_(p._fp32_shard, p._shard_size)
-                ssd_offload.read(p._fp32_shard.cpu(), p._filename, num_padded=p._num_padded)
-                p._fp32_shard = p._fp32_shard.cuda()
-                p.data = p._fp32_shard
 
         def update_p_data(custom_output_tensor: Optional[torch.Tensor] = None) -> None:
             """
