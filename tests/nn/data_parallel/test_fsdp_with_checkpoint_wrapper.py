@@ -5,12 +5,13 @@
 
 """ Test FSDP with an submodule that is FSDP(checkpoint_wrapper()). """
 
+import unittest
+
 import pytest
 import torch
 from torch import nn
 import torch.distributed
 import torch.multiprocessing as mp
-import unittest
 
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 from fairscale.nn.data_parallel import FullyShardedDataParallel
@@ -29,6 +30,7 @@ def test_train_and_eval_with_checkpointing():
         mp.spawn(
             _test_func, args=(world_size, temp_file_name, unused), nprocs=world_size, join=True,
         )
+
 
 @skip_if_single_gpu
 def test_eval_with_checkpointing():
@@ -78,6 +80,7 @@ def _test_func(rank, world_size, tempfile_name, unused):
 
     teardown()
 
+
 def _test_func_with_ssd_offload(rank, world_size, tempfile_name, unused):
     result = dist_init(rank, world_size, tempfile_name, unused)
     assert result, "Dist init failed"
@@ -86,10 +89,10 @@ def _test_func_with_ssd_offload(rank, world_size, tempfile_name, unused):
     torch.manual_seed(0)
 
     model = FullyShardedDataParallel(SimpleModuleWithCheckpointing(), ssd_offload=True)
-    
+
     if not model.flatten_parameters:
         raise unittest.skipTest("This test requires flatten_parameters to be set to True.")
-    
+
     shape = [tuple(p.shape) for p in model.params]
     expected_shape = [(12,)]
     assert expected_shape == shape

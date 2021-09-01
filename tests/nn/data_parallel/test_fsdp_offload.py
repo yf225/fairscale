@@ -49,12 +49,6 @@ class DistributedTest(unittest.TestCase):
                 loss = model.module.get_loss(input, output).to(model_device)
             assert loss.dtype == torch.float32
             model.module.run_backward(loss)
-            if norm_type is not None:
-                clip_norm = 0.3
-                if isinstance(model, FullyShardedDataParallel):
-                    model.clip_grad_norm_(clip_norm, norm_type)
-                else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_norm, norm_type)
         if isinstance(model, FullyShardedDataParallel):
             model.assert_state(TrainingState.IDLE)
         return loss.detach()
