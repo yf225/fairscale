@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import reduce
 import io
 import os
 import pickle
@@ -34,7 +35,7 @@ def write(t: torch.Tensor, filename: str) -> None:
             f.write(_tensor_to_bytes_chunks(t, i))
 
 
-def read(t: torch.Tensor, filename: str, num_padded: int = None) -> None:
+def read(t: torch.Tensor, filename: str) -> None:
     size_in_bytes = t.nelement() * t.element_size()
     chunk_size_bytes = DEFAULT_CHUNK_SIZE
     num_chunks = _get_num_chunks(t)
@@ -49,8 +50,55 @@ def read(t: torch.Tensor, filename: str, num_padded: int = None) -> None:
             assert data_read == chunk_end - chunk_start
 
 
+class SsdTensorHandle:
+    def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype) -> None:
+        self.shape = shape
+        if len(shape) == 0:
+            self.numel = 0
+        else:
+            self.numel = reduce((lambda x, y: x * y), shape)
+        self.dtype = dtype
+        # valid if offloaded to file
+        self.filename = ""
+        self.offset = 0
+        # valid if loaded to memory
+        self.tensor: Optional[torch.Tensor] = None
+        pass
+
+    @classmethod
+    def from_file(cls, shape: Tuple[int, ...], dtype: torch.dtype, filename: str) -> SsdTensorHandle:
+        handle = cls(shape, dtype)
+        handle.filename = filename
+        return handle
+
+    @classmethod
+    def from_tensor(cls, tensor: torch.Tensor) -> SsdTensorHandle:
+        handle = cls(tensor.shape, tensor.dtype)
+        handle.tensor = tensor
+        return handle
+
+    def is_available(self) -> bool:
+        return self.tensor is not None
+
+    def get_tensor(self) -> torch.Tensor:
+        assert self.tensor is not None
+        return self.tensor
+
+    def to_file(self, filename: str, offset: int) -> None:
+        self.filename = filename
+        self.offset = offset
+        self.tensor = None
+
+    def to_tensor(self, tensor: torch.Tensor) -> None:
+        assert self.shape == tensor.shape
+        assert self.dtype == tensor.dtype
+        self.filename = ""
+        self.offset = 0
+        self.tensor = tensor
+
+
 # Class supporting a single SSD file backing (possibly) one or
-# more tensors, loosely modeled after DeepSpeed's SwapBuffer
+# more tensors
 class SsdBuffer:
     def __init__(self, buffer: torch.Tensor, filename: str) -> None:
         self.buffer: Optional[torch.Tensor] = buffer
@@ -59,60 +107,44 @@ class SsdBuffer:
 
     def reset(self) -> None:
         self.offset = 0
-        self.num_elem = 0
-        # tensor including padding at the end for efficient disk read/write
-        self.padded_tensors: Dict[int, Tuple[int, Optional[torch.Tensor]]] = {}
-        self.tensors: Dict[int, Tuple[int, Optional[torch.Tensor]]] = {}
+        self.tensors: Dict[int, SsdTensorHandle] = {}
 
-    def allocate(self, n: int, padded_n: int) -> Tuple[int, Optional[torch.Tensor]]:
-        assert self.can_alloc(padded_n)
-        assert padded_n >= n
+    def allocate(self, n: int) -> SsdTensorHandle:
+        assert self.can_alloc(n)
         assert n > 0
-        assert self.buffer
+        assert self.buffer is not None
 
-        padded_tensor = self.buffer.narrow(0, self.offset, padded_n)
-        tensor = padded_tensor.narrow(0, 0, n)
+        tensor = self.buffer.narrow(0, self.offset, n)
 
         tensor_offset = self.offset
-        self.padded_tensors[tensor_offset] = (padded_n, padded_tensor)
-        self.tensors[tensor_offset] = (n, tensor)
-        self.offset += padded_n
-        self.num_elem += n
+        handle = SsdTensorHandle.from_tensor(tensor)
+        self.tensors[tensor_offset] = handle
+        self.offset += n
 
-        return tensor_offset, tensor
+        return handle
 
-    def insert(self, tensor: torch.Tensor, padded_n: int) -> Tuple[int, Optional[torch.Tensor]]:
-        offset, dst_tensor = self.allocate(tensor.numel(), padded_n)
-        assert dst_tensor
-        dst_tensor.data.copy_(tensor.data)
-        return offset, dst_tensor
+    def insert(self, tensor: torch.Tensor) -> SsdTensorHandle:
+        assert self.buffer is not None
+        assert self.buffer.dtype == tensor.dtype
+        handle = self.allocate(tensor.numel())
+        handle.get_tensor().data.copy_(tensor.data)
+        return handle
 
     def can_alloc(self, n: int) -> bool:
-        assert self.buffer
+        assert self.buffer is not None
         return (self.offset + n) <= self.buffer.numel()
 
-    def get_tensors(self) -> List[Tuple[int, Optional[torch.Tensor]]]:
-        return [(offset, t) for (offset, (n, t)) in self.tensors.items()]
-
-    def get_padded_tensors(self) -> List[Tuple[int, Optional[torch.Tensor]]]:
-        return [(offset, t) for (offset, (n, t)) in self.padded_tensors.items()]
-
-    def get_tensor(self, offset: int) -> Optional[torch.Tensor]:
-        _, tensor = self.tensors.get(offset, (None, None))
-        return tensor
-
-    def get_padded_tensor(self, offset: int) -> Optional[torch.Tensor]:
-        _, tensor = self.padded_tensors.get(offset, (None, None))
-        return tensor
+    def get_tensors(self) -> List[SsdTensorHandle]:
+        return [t for t in self.tensors.values()]
 
     def to_disk(self) -> None:
-        assert self.buffer
+        assert self.buffer is not None
         valid_data = self.buffer.narrow(0, 0, self.offset)
         write(valid_data, self.filename)
 
         # Remove all Tensor references
-        self.tensors = {offset: (n, None) for offset, (n, t) in self.tensors.items()}
-        self.padded_tensors = {offset: (n, None) for offset, (n, t) in self.padded_tensors.items()}
+        for offset, t in self.tensors.items():
+            t.to_file(self.filename, offset)
 
         self.buffer = None
 
@@ -126,10 +158,8 @@ class SsdBuffer:
         read(valid_data, self.filename)
 
         # Restore Tensor References
-        self.tensors = {offset: (n, self.buffer.narrow(0, offset, n)) for offset, (n, t) in self.tensors.items()}
-        self.padded_tensors = {
-            offset: (n, self.buffer.narrow(0, offset, n)) for offset, (n, t) in self.padded_tensors.items()
-        }
+        for offset, t in self.tensors.items():
+            t.to_tensor(self.buffer.narrow(0, t.offset, t.numel))
 
 
 # Classes supporting torch.save/load

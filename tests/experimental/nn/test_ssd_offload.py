@@ -43,44 +43,51 @@ def test_ssd_buffer_basic():
         buffer = torch.empty((1024), dtype=torch.float32)
         ssd_buf = so.SsdBuffer(buffer, f.name)
 
-        a_off, buf_a = ssd_buf.insert(refa_tensor, refa_tensor.numel())
-        b_off, buf_b = ssd_buf.insert(refb_tensor, refb_tensor.numel())
-        c_off, buf_c = ssd_buf.insert(refc_tensor, refc_tensor.numel())
+        hdl_a = ssd_buf.insert(refa_tensor)
+        hdl_b = ssd_buf.insert(refb_tensor)
+        hdl_c = ssd_buf.insert(refc_tensor)
 
-        assert torch.equal(refa_tensor, buf_a)
-        assert torch.equal(refb_tensor, buf_b)
-        assert torch.equal(refc_tensor, buf_c)
+        assert hdl_a.is_available()
+        assert hdl_b.is_available()
+        assert hdl_c.is_available()
 
-        assert ssd_buf.get_tensor(a_off) is buf_a
-        assert ssd_buf.get_tensor(b_off) is buf_b
-        assert ssd_buf.get_tensor(c_off) is buf_c
+        assert torch.equal(refa_tensor, hdl_a.get_tensor())
+        assert torch.equal(refb_tensor, hdl_b.get_tensor())
+        assert torch.equal(refc_tensor, hdl_c.get_tensor())
 
-        assert a_off == 0
-        assert b_off == 128
-        assert c_off == 256
+        tensors = ssd_buf.get_tensors()
+
+        assert hdl_a in tensors
+        assert hdl_b in tensors
+        assert hdl_c in tensors
 
         # remove references so memory will be cleaned up
         buffer = None
-        buf_a = None
-        buf_b = None
-        buf_c = None
 
         ssd_buf.to_disk()
 
-        assert ssd_buf.get_tensor(a_off) is None
-        assert ssd_buf.get_tensor(b_off) is None
-        assert ssd_buf.get_tensor(c_off) is None
+        assert hdl_a.filename == f.name
+        assert hdl_b.filename == f.name
+        assert hdl_c.filename == f.name
+
+        assert hdl_a.offset == 0
+        assert hdl_b.offset == 128
+        assert hdl_c.offset == 256
+
+        assert not hdl_a.is_available()
+        assert not hdl_b.is_available()
+        assert not hdl_c.is_available()
 
         buffer = torch.empty((384), dtype=torch.float32)
         ssd_buf.from_disk(buffer)
 
-        new_buf_a = ssd_buf.get_tensor(a_off)
-        new_buf_b = ssd_buf.get_tensor(b_off)
-        new_buf_c = ssd_buf.get_tensor(c_off)
+        assert hdl_a.is_available()
+        assert hdl_b.is_available()
+        assert hdl_c.is_available()
 
-        assert torch.equal(refa_tensor, new_buf_a)
-        assert torch.equal(refb_tensor, new_buf_b)
-        assert torch.equal(refc_tensor, new_buf_c)
+        assert torch.equal(refa_tensor, hdl_a.get_tensor())
+        assert torch.equal(refb_tensor, hdl_b.get_tensor())
+        assert torch.equal(refc_tensor, hdl_c.get_tensor())
 
 
 def test_torch_save_load():
