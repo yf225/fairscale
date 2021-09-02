@@ -35,7 +35,7 @@ def write(t: torch.Tensor, filename: str) -> None:
             f.write(_tensor_to_bytes_chunks(t, i))
 
 
-def read(t: torch.Tensor, filename: str) -> None:
+def read(t: torch.Tensor, filename: str, file_offset_bytes: int = 0) -> None:
     size_in_bytes = t.nelement() * t.element_size()
     chunk_size_bytes = DEFAULT_CHUNK_SIZE
     num_chunks = _get_num_chunks(t)
@@ -43,6 +43,7 @@ def read(t: torch.Tensor, filename: str) -> None:
     t_mv = memoryview(t_np.view(dtype=np.uint8).reshape(-1))
     fixed_mv = t_mv[0:chunk_size_bytes]
     with io.open(filename, "rb") as f:
+        f.seek(file_offset_bytes)
         for i in range(num_chunks):
             chunk_start = i * chunk_size_bytes
             chunk_end = min(size_in_bytes, chunk_start + chunk_size_bytes)
@@ -96,16 +97,30 @@ class SsdTensorHandle:
         self.offset = 0
         self.tensor = tensor
 
+    def copy_into_tensor(self, tensor: torch.Tensor) -> None:
+        """
+        if self.is_available(), this copies the Handle's tensor
+        into the passed in tensor. Otherwise, if !is_available(),
+        this reads from file into tensor, using the read() function.
+        Does not modify modify self.tensor unlike to_tensor() function.
+        This can be useful for calls like named_parameters() when
+        the tensor is already offloaded to disk.
+        """
+        assert self.shape == tensor.shape
+        assert self.dtype == tensor.dtype
+        assert self.tensor is not None
+        if self.is_available():
+            tensor.copy_(self.tensor)
+        else:
+            read(tensor, self.filename, self.offset * tensor.element_size())
 
-# Class supporting a single SSD file backing (possibly) one or
+
+# Class supporting a single SSD file backing one or
 # more tensors
 class SsdBuffer:
     def __init__(self, buffer: torch.Tensor, filename: str) -> None:
         self.buffer: Optional[torch.Tensor] = buffer
         self.filename = filename
-        self.reset()
-
-    def reset(self) -> None:
         self.offset = 0
         self.tensors: Dict[int, SsdTensorHandle] = {}
 

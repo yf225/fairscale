@@ -12,6 +12,7 @@ import os
 import tempfile
 
 import numpy as np
+import pytest
 import torch
 
 import fairscale.experimental.nn.ssd_offload as so
@@ -61,6 +62,11 @@ def test_ssd_buffer_basic():
         assert hdl_b in tensors
         assert hdl_c in tensors
 
+        # test read_into_tensor when handle.is_available()
+        b_tensor_copy1 = torch.empty_like(refb_tensor)
+        hdl_b.copy_into_tensor(b_tensor_copy1)
+        assert torch.equal(refb_tensor, b_tensor_copy1)
+
         # remove references so memory will be cleaned up
         buffer = None
 
@@ -78,6 +84,11 @@ def test_ssd_buffer_basic():
         assert not hdl_b.is_available()
         assert not hdl_c.is_available()
 
+        # test read_into_tensor when !handle.is_available()
+        b_tensor_copy2 = torch.empty_like(refb_tensor)
+        hdl_b.copy_into_tensor(b_tensor_copy2)
+        assert torch.equal(refb_tensor, b_tensor_copy2)
+
         buffer = torch.empty((384), dtype=torch.float32)
         ssd_buf.from_disk(buffer)
 
@@ -88,6 +99,42 @@ def test_ssd_buffer_basic():
         assert torch.equal(refa_tensor, hdl_a.get_tensor())
         assert torch.equal(refb_tensor, hdl_b.get_tensor())
         assert torch.equal(refc_tensor, hdl_c.get_tensor())
+
+
+def test_ssd_buffer_too_small_from_disk():
+    _init()
+    with tempfile.NamedTemporaryFile() as f:
+        refa_tensor = torch.rand((128), dtype=torch.float32)
+        buffer = torch.empty((128), dtype=torch.float32)
+        ssd_buf = so.SsdBuffer(buffer, f.name)
+        hdl_a = ssd_buf.insert(refa_tensor)
+        ssd_buf.to_disk()
+
+        buffer = torch.empty((127), dtype=torch.float32)
+        with pytest.raises(RuntimeError):
+            ssd_buf.from_disk(buffer)
+
+
+def test_ssd_buffer_null_buffer():
+    _init()
+    with tempfile.NamedTemporaryFile() as f:
+        refa_tensor = torch.rand((128), dtype=torch.float32)
+        buffer = torch.empty((128), dtype=torch.float32)
+        ssd_buf = so.SsdBuffer(buffer, f.name)
+        hdl_a = ssd_buf.insert(refa_tensor)
+        ssd_buf.to_disk()
+
+        with pytest.raises(AssertionError):
+            ssd_buf.to_disk()
+
+        with pytest.raises(AssertionError):
+            hdl_a = ssd_buf.insert(refa_tensor)
+
+        with pytest.raises(AssertionError):
+            ssd_buf.can_alloc(128)
+
+        with pytest.raises(AssertionError):
+            hdl = ssd_buf.allocate(128)
 
 
 def test_torch_save_load():
