@@ -302,6 +302,11 @@ class FullyShardedDataParallel(nn.Module):
         # enable pytorch sync_bn just in case model contains sync_bn layers.
         enable_pytorch_sync_bn(module)
 
+        # We set this boolean at the beginning to enable us to populate some of the
+        # metadata required for sharding and flattening. We don't use the tensor data
+        # of the parameters.
+        self.training_state = None
+
         # Only handle params which are not already sharded. This enables
         # sharding individual layers of a Module, with an outer wrapper to
         # shard any leftover parameters.
@@ -338,8 +343,6 @@ class FullyShardedDataParallel(nn.Module):
         self.params = cast(List[Parameter], self._fsdp_wrapped_module.flat_params) + non_flatten_params
         self._num_flatten_params = len(self._fsdp_wrapped_module.flat_params)
         self._param_name_groups = param_name_groups
-
-        self.training_state = None
 
         for n, p in self.named_parameters():
             if not hasattr(p, "_filename"):
@@ -699,6 +702,18 @@ class FullyShardedDataParallel(nn.Module):
 
         return super().parameters(recurse=recurse)
 
+    @contextlib.contextmanager
+    def _return_parameter_properties(self) -> Generator:
+        prev_training_state = self.training_state
+        self.training_state = None
+
+        assert self.ssd_offload
+
+        try:
+            yield
+        finally:
+            self._return_full_state_dict = prev_training_state
+
     def named_parameters(self, prefix: str = "", recurse: bool = True) -> Iterator[Tuple[str, Parameter]]:
         """Returns an iterator over the module parameters, yielding both the name of the
         parameter as well as the parameter.
@@ -711,7 +726,7 @@ class FullyShardedDataParallel(nn.Module):
         under a `summon_full_params` context when using flattened or original params.
         """
 
-        if self.ssd_offload and self.training_state:
+        if self.ssd_offload and self.training_state is not None:
             raise RuntimeError(
                 "FSDP model doesn't support calling named_parameters() when "
                 + "ssd_offload is true. This is because the parameters returned will not "

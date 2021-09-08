@@ -13,7 +13,7 @@ import torch
 
 from .test_fsdp import DistributedTest, rename_test, spawn_and_init
 
-keys = ["reshard_after_forward", "mixed_precision", "flatten_parameters", "ssd_offload"]
+keys = ["reshard_after_forward", "mixed_precision", "flatten_parameters"]
 CONFIG_OPTIONS = [[dict(zip(keys, config))] for config in itertools.product([True, False], repeat=len(keys))]
 
 
