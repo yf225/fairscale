@@ -712,7 +712,7 @@ class FullyShardedDataParallel(nn.Module):
         try:
             yield
         finally:
-            self._return_full_state_dict = prev_training_state
+            self.training_state = prev_training_state
 
     def named_parameters(self, prefix: str = "", recurse: bool = True) -> Iterator[Tuple[str, Parameter]]:
         """Returns an iterator over the module parameters, yielding both the name of the

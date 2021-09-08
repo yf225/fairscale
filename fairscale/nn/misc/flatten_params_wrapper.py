@@ -180,16 +180,18 @@ class FlattenParamsWrapper(nn.Module):
             # which will survive in case the parameter instances are reset.
             # Also, a shared param will correctly appear under multiple modules
             # as they should.
-            new_p_set_with_names = set()
+            new_p_set_with_names: Set[Tuple[nn.Module[Any], str]] = set()
             for m in self.modules():
 
-                def _add_module_name_tuples(m, p_set, new_p_set_with_names):
+                def _add_module_name_tuples(
+                    m: nn.Module, p_set: Set[nn.Parameter], new_p_set_with_names: Set[Tuple[nn.Module[Any], str]]
+                ) -> None:
                     for n, p in m.named_parameters(recurse=False):
                         if p in p_set:
                             new_p_set_with_names.add((m, n))
 
                 if m.__class__.__name__ == "FullyShardedDataParallel" and m.ssd_offload:
-                    with m._return_parameter_properties():
+                    with m._return_parameter_properties():  # type: ignore
                         _add_module_name_tuples(m, p_set, new_p_set_with_names)
                 else:
                     _add_module_name_tuples(m, p_set, new_p_set_with_names)
