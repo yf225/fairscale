@@ -8,7 +8,9 @@ from typing import IO, Any, BinaryIO, Callable, Dict, Iterator, List, Optional, 
 
 import numpy as np
 import torch
+from torch.optim import _functional as F
 from torch.serialization import DEFAULT_PROTOCOL as DEFAULT_PROTOCOL
+from torch.utils._pytree import tree_map
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 
@@ -28,9 +30,10 @@ def _tensor_to_bytes_chunks(t: torch.Tensor, chunk_idx: int, chunk_size_bytes: i
     return t_np[chunk_start:chunk_end].tobytes()
 
 
-def write(t: torch.Tensor, filename: str) -> None:
+def write(t: torch.Tensor, filename: str, file_offset_bytes: int = 0) -> None:
     num_chunks = _get_num_chunks(t)
-    with open(filename, "wb") as f:
+    with open(filename, "r+b") as f:
+        f.seek(file_offset_bytes)
         for i in range(num_chunks):
             f.write(_tensor_to_bytes_chunks(t, i))
 
@@ -51,30 +54,122 @@ def read(t: torch.Tensor, filename: str, file_offset_bytes: int = 0) -> None:
             assert data_read == chunk_end - chunk_start
 
 
-class SsdTensorHandle:
-    def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype) -> None:
-        self.shape = shape
+class SsdAdamOptimizer(torch.optim.Optimizer):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+        if not 0.0 <= weight_decay:
+            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
+        super(SsdAdamOptimizer, self).__init__(params, defaults)
+
+    def __setstate__(self, state):
+        super(Adam, self).__setstate_(state)
+        for group in self.param_groups:
+            group.setdefault("amsgrad", False)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            params_with_grad = []
+            grads = []
+            exp_avgs = []
+            exp_avg_sqs = []
+            max_exp_avg_sqs = []
+            state_steps = []
+            beta1, beta2 = group["betas"]
+
+            for p in group["params"]:
+                if p.grad is not None:
+                    params_with_grad.append(p)
+                    if p.grad.is_sparse:
+                        raise RuntimeError("Adam does not support sparse gradients, please consider SparseAdam instead")
+                    grads.append(p.grad)
+
+                    state = self.state[p]
+                    # Lazy state initialization
+                    if len(state) == 0:
+                        state["step"] = 0
+                        # Exponential moving average of gradient values
+                        state["exp_avg"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                        # Exponential moving average of squared gradient values
+                        state["exp_avg_sq"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                        if group["amsgrad"]:
+                            # Maintains max of all exp. moving avg. of sq. grad. values
+                            state["max_exp_avg_sq"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+
+                    exp_avgs.append(state["exp_avg"])
+                    exp_avg_sqs.append(state["exp_avg_sq"])
+
+                    if group["amsgrad"]:
+                        max_exp_avg_sqs.append(state["max_exp_avg_sq"])
+
+                    # update the steps for each param group update
+                    state["step"] += 1
+                    # record the step after step update
+                    state_steps.append(state["step"])
+
+            F.adam(
+                params_with_grad,
+                grads,
+                exp_avgs,
+                exp_avg_sqs,
+                max_exp_avg_sqs,
+                state_steps,
+                amsgrad=group["amsgrad"],
+                beta1=beta1,
+                beta2=beta2,
+                lr=group["lr"],
+                weight_decay=group["weight_decay"],
+                eps=group["eps"],
+            )
+        return loss
+
+
+class SsdTensorHandle(torch.Tensor):
+    @staticmethod
+    def __new__(cls, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = False) -> SsdTensorHandle:
+        # TODO: PJ/AS Pass in proper shape of tensor to ._make_subclass so that backward calculates gradients properly
+        r = torch.Tensor._make_subclass(cls, torch.empty(()), requires_grad)
+        return r
+
+    def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool) -> None:
+        self._shape = shape
         if len(shape) == 0:
             self.numel = 0
         else:
             self.numel = reduce((lambda x, y: x * y), shape)
-        self.dtype = dtype
+        self._dtype = dtype
         # valid if offloaded to file
         self.filename = ""
-        self.offset = 0
+        self.offset = -1
         # valid if loaded to memory
         self.tensor: Optional[torch.Tensor] = None
+        self.requires_grad = requires_grad
         pass
 
     @classmethod
-    def from_file(cls, shape: Tuple[int, ...], dtype: torch.dtype, filename: str) -> SsdTensorHandle:
-        handle = cls(shape, dtype)
+    def from_file(
+        cls, shape: Tuple[int, ...], dtype: torch.dtype, filename: str, requires_grad: bool = False
+    ) -> SsdTensorHandle:
+        handle = cls(shape=shape, dtype=dtype, requires_grad=requires_grad)
         handle.filename = filename
         return handle
 
     @classmethod
     def from_tensor(cls, tensor: torch.Tensor) -> SsdTensorHandle:
-        handle = cls(tensor.shape, tensor.dtype)
+        handle = cls(shape=tensor.shape, dtype=tensor.dtype, requires_grad=tensor.requires_grad)
         handle.tensor = tensor
         return handle
 
@@ -85,17 +180,33 @@ class SsdTensorHandle:
         assert self.tensor is not None
         return self.tensor
 
-    def to_file(self, filename: str, offset: int) -> None:
+    def set_file_params(self, filename: str, offset: int) -> None:
         self.filename = filename
         self.offset = offset
+
+    def point_to_file(self, filename: str, offset: int) -> None:
+        set_file_params(filename, offset)
         self.tensor = None
 
-    def to_tensor(self, tensor: torch.Tensor) -> None:
-        assert self.shape == tensor.shape
-        assert self.dtype == tensor.dtype
-        self.filename = ""
-        self.offset = 0
+    def point_to_tensor(self, tensor: torch.Tensor) -> None:
+        assert self.tensor is None
+        assert self._shape == tensor.shape
+        assert self._dtype == tensor.dtype
         self.tensor = tensor
+
+    def to_tensor(self) -> torch.Tensor:
+        if self.is_available():
+            return self.tensor
+        else:
+            result_tensor = torch.empty(size=self._shape, dtype=self._dtype, requires_grad=self.requires_grad)
+            self.copy_into_tensor(result_tensor)
+            self.tensor = result_tensor
+            return self.tensor
+
+    def to_file(self, release_tensor_after_write: bool = True) -> None:
+        write(self.tensor, self.filename, self.offset * self.tensor.element_size())
+        if release_tensor_after_write:
+            self.tensor = None
 
     def copy_into_tensor(self, tensor: torch.Tensor) -> None:
         """
@@ -106,13 +217,39 @@ class SsdTensorHandle:
         This can be useful for calls like named_parameters() when
         the tensor is already offloaded to disk.
         """
-        assert self.shape == tensor.shape
-        assert self.dtype == tensor.dtype
-        assert self.tensor is not None
+        assert self._shape == tensor.shape
+        assert self._dtype == tensor.dtype
         if self.is_available():
+            assert self.tensor is not None
             tensor.copy_(self.tensor)
         else:
             read(tensor, self.filename, self.offset * tensor.element_size())
+
+    __torch_function__ = torch._C._disabled_torch_function_impl
+
+    @classmethod
+    def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
+        ssd_tensor_handles = []
+
+        def unwrap(e):
+            if isinstance(e, SsdTensorHandle):
+                t = e.to_tensor()
+                ssd_tensor_handles.append((e, t._version))
+                return t
+            else:
+                return e
+
+        # need to test if tensor is modified
+        r = func(*tree_map(unwrap, args), **tree_map(unwrap, kwargs))
+
+        for e, saved_version in ssd_tensor_handles:
+            # TODO: version counter trick doesn't work
+            """
+            if saved_version != e.tensor._version:
+                r.to_file()
+            """
+            e.to_file()
+        return r
 
 
 # Class supporting a single SSD file backing one or
@@ -159,7 +296,7 @@ class SsdBuffer:
 
         # Remove all Tensor references
         for offset, t in self.tensors.items():
-            t.to_file(self.filename, offset)
+            t.point_to_file(self.filename, offset)
 
         self.buffer = None
 
@@ -174,7 +311,7 @@ class SsdBuffer:
 
         # Restore Tensor References
         for offset, t in self.tensors.items():
-            t.to_tensor(self.buffer.narrow(0, t.offset, t.numel))
+            t.point_to_tensor(self.buffer.narrow(0, t.offset, t.numel))
 
 
 # Classes supporting torch.save/load
@@ -256,13 +393,14 @@ class SsdTensor:
         # adding _2 to the filename is just a hack to prevent overwriting the original SsdTensor data
         return (
             type(self).__unpickle__,
-            (self.shape, self.filename + "_2", self.dtype,),
+            (
+                self.shape,
+                self.filename + "_2",
+                self.dtype,
+            ),
             None,
             iter(FileChunkingIterator(self.filename)),
         )
-
-    def _init_loading(self) -> None:
-        self.f = io.open(self.filename, "wb")
 
     def append(self, item: bytes) -> None:
         assert self.f
