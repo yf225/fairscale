@@ -54,8 +54,10 @@ def read(t: torch.Tensor, filename: str, file_offset_bytes: int = 0) -> None:
             assert data_read == chunk_end - chunk_start
 
 
+# PJ: WIP
+"""
 class SsdAdamOptimizer(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False):
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False) -> None:
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if not 0.0 <= eps:
@@ -69,13 +71,13 @@ class SsdAdamOptimizer(torch.optim.Optimizer):
         defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
         super(SsdAdamOptimizer, self).__init__(params, defaults)
 
-    def __setstate__(self, state):
-        super(Adam, self).__setstate_(state)
+    def __setstate__(self, state) -> None:
+        super(SsdAdamOptimizer, self).__setstate_(state)
         for group in self.param_groups:
             group.setdefault("amsgrad", False)
 
     @torch.no_grad()
-    def step(self, closure=None):
+    def step(self, closure=None) -> Optional[int]:
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -135,11 +137,14 @@ class SsdAdamOptimizer(torch.optim.Optimizer):
                 eps=group["eps"],
             )
         return loss
+"""
 
 
 class SsdTensorHandle(torch.Tensor):
     @staticmethod
-    def __new__(cls, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = False) -> SsdTensorHandle:
+    def __new__(
+        cls: SsdTensorHandle, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = False
+    ) -> SsdTensorHandle:
         # TODO: PJ/AS Pass in proper shape of tensor to ._make_subclass so that backward calculates gradients properly
         r = torch.Tensor._make_subclass(cls, torch.empty(()), requires_grad)
         return r
@@ -147,9 +152,9 @@ class SsdTensorHandle(torch.Tensor):
     def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool) -> None:
         self._shape = shape
         if len(shape) == 0:
-            self.numel = 0
+            self._numel = 0
         else:
-            self.numel = reduce((lambda x, y: x * y), shape)
+            self._numel = reduce((lambda x, y: x * y), shape)
         self._dtype = dtype
         # valid if offloaded to file
         self.filename = ""
@@ -185,7 +190,7 @@ class SsdTensorHandle(torch.Tensor):
         self.offset = offset
 
     def point_to_file(self, filename: str, offset: int) -> None:
-        set_file_params(filename, offset)
+        self.set_file_params(filename, offset)
         self.tensor = None
 
     def point_to_tensor(self, tensor: torch.Tensor) -> None:
@@ -195,7 +200,7 @@ class SsdTensorHandle(torch.Tensor):
         self.tensor = tensor
 
     def to_tensor(self) -> torch.Tensor:
-        if self.is_available():
+        if self.tensor is not None:
             return self.tensor
         else:
             result_tensor = torch.empty(size=self._shape, dtype=self._dtype, requires_grad=self.requires_grad)
@@ -204,6 +209,7 @@ class SsdTensorHandle(torch.Tensor):
             return self.tensor
 
     def to_file(self, release_tensor_after_write: bool = True) -> None:
+        assert self.tensor is not None
         write(self.tensor, self.filename, self.offset * self.tensor.element_size())
         if release_tensor_after_write:
             self.tensor = None
@@ -219,8 +225,7 @@ class SsdTensorHandle(torch.Tensor):
         """
         assert self._shape == tensor.shape
         assert self._dtype == tensor.dtype
-        if self.is_available():
-            assert self.tensor is not None
+        if self.tensor is not None:
             tensor.copy_(self.tensor)
         else:
             read(tensor, self.filename, self.offset * tensor.element_size())
@@ -311,7 +316,7 @@ class SsdBuffer:
 
         # Restore Tensor References
         for offset, t in self.tensors.items():
-            t.point_to_tensor(self.buffer.narrow(0, t.offset, t.numel))
+            t.point_to_tensor(self.buffer.narrow(0, t.offset, t._numel))
 
 
 # Classes supporting torch.save/load
@@ -393,11 +398,7 @@ class SsdTensor:
         # adding _2 to the filename is just a hack to prevent overwriting the original SsdTensor data
         return (
             type(self).__unpickle__,
-            (
-                self.shape,
-                self.filename + "_2",
-                self.dtype,
-            ),
+            (self.shape, self.filename + "_2", self.dtype,),
             None,
             iter(FileChunkingIterator(self.filename)),
         )

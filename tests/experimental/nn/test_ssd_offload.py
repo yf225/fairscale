@@ -34,24 +34,26 @@ def test_write_read():
         so.read(test_tensor, f.name)
         assert torch.equal(ref_tensor, test_tensor)
 
+
 def test_ssd_handle_dispatch_fwd():
     with tempfile.NamedTemporaryFile() as f:
-	orig_tensor = torch.randn((128))
-	ssd_handle = so.SsdTensorHandle.from_tensor(orig_tensor)
-	ssd_handle.set_file_params(f.name, 0)
-	ssd_handle.to_file(release_tensor_after_write=True)
+        orig_tensor = torch.randn((128))
+        ssd_handle = so.SsdTensorHandle.from_tensor(orig_tensor)
+        ssd_handle.set_file_params(f.name, 0)
+        ssd_handle.to_file(release_tensor_after_write=True)
 
-	assert torch.equal(ssd_handle.to_tensor(), orig_tensor)
+        assert torch.equal(ssd_handle.to_tensor(), orig_tensor)
 
         # This should trigger the torch_dispatch code and write
         # back the results to the file
-	ssd_handle.add_(1)
+        ssd_handle.add_(1)
         plus1_tensor = orig_tensor.add(1)
         assert torch.equal(ssd_handle.to_tensor(), plus1_tensor)
 
+
 def test_ssd_handle_dispatch_bwd():
     with tempfile.NamedTemporaryFile() as f:
-        orig_tensor = torch.randn((4,4), requires_grad=True)
+        orig_tensor = torch.randn((4, 4), requires_grad=True)
         orig_copy = orig_tensor.clone().detach().requires_grad_(True)
         ssd_handle = so.SsdTensorHandle.from_tensor(orig_tensor)
         ssd_handle.set_file_params(f.name, 0)
@@ -65,7 +67,8 @@ def test_ssd_handle_dispatch_bwd():
         y2.sum().backward()
 
         # TODO: PJ/ASenable assert once Tensor._make_subclass can properly define the tensor's shape
-        #assert torch.equal(ssd_handle.grad, orig_copy.grad)
+        # assert torch.equal(ssd_handle.grad, orig_copy.grad)
+
 
 def test_ssd_buffer_basic():
     _init()
