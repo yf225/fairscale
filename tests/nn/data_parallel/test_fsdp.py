@@ -534,16 +534,12 @@ class TestNoGrad(DistributedTest):
         assert objects_are_equal(ref_output, no_grad_output, raise_exception=True)
 
 
+KEYS = ["ssd_offload", "flatten_parameters"]
+CONFIG = [[dict(zip(KEYS, config))] for config in itertools.product([True, False], repeat=len(KEYS))]
+
+
 class TestModuleProperties(DistributedTest):
-    @parameterized.expand(
-        [
-            [{"flatten_parameters": False}],
-            [{"flatten_parameters": True}],
-            [{"ssd_offload": False}],
-            [{"ssd_offload": True}],
-        ],
-        name_func=rename_test,
-    )
+    @parameterized.expand(CONFIG, name_func=rename_test)
     def test_named_parameters(self, config):
         test_fn = functools.partial(self._test_named_params, config=config)
         spawn_and_init(test_fn)
@@ -571,7 +567,7 @@ class TestModuleProperties(DistributedTest):
         # Get the named parameters after wrapping to compare.
         after_wrap_params = model.named_parameters()
 
-        if config.get("flatten_parameters", False):
+        if not config.get("flatten_parameters", False):
             for before_nm, after_nm in zip(before_wrap_params, after_wrap_params):
                 assert before_nm[0] == after_nm[0]
         else:

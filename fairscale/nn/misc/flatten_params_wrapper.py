@@ -184,7 +184,7 @@ class FlattenParamsWrapper(nn.Module):
             for m in self.modules():
 
                 def _add_module_name_tuples(
-                    m: nn.Module, p_set: Set[nn.Parameter], new_p_set_with_names: Set[Tuple[nn.Module[Any], str]]
+                    m: nn.Module, p_set: Set[nn.Parameter], new_p_set_with_names: Set[Tuple[nn.Module, str]]
                 ) -> None:
                     for n, p in m.named_parameters(recurse=False):
                         if p in p_set:
