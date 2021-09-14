@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 from parameterized import parameterized
+import pytest
 import torch
 from torch import nn
 import torch.distributed
@@ -46,8 +47,6 @@ class DistributedTest(unittest.TestCase):
 
     @staticmethod
     def _train_for_several_steps(model, num_steps, autocast, lr=0.01, norm_type=None):
-        ssd_offload = getattr(model, "ssd_offload", False)
-        print(f"ssd_offload {ssd_offload}")
         model_device = next(model.parameters()).device
         # use SGD with momentum instead of Adam, since Adam is scale invariant
         # and this makes it bad for tests
@@ -535,8 +534,12 @@ class TestNoGrad(DistributedTest):
         assert objects_are_equal(ref_output, no_grad_output, raise_exception=True)
 
 
+KEYS = ["ssd_offload", "flatten_parameters"]
+CONFIG = [[dict(zip(KEYS, config))] for config in itertools.product([True, False], repeat=len(KEYS))]
+
+
 class TestModuleProperties(DistributedTest):
-    @parameterized.expand([[{"flatten_parameters": False}], [{"flatten_parameters": True}]], name_func=rename_test)
+    @parameterized.expand(CONFIG, name_func=rename_test)
     def test_named_parameters(self, config):
         test_fn = functools.partial(self._test_named_params, config=config)
         spawn_and_init(test_fn)
@@ -549,12 +552,22 @@ class TestModuleProperties(DistributedTest):
 
         # Train the model for 1 step.
         model = self.get_wrapped_model(group, cuda_first=False, config=config)
+        if config.get("ssd_offload", False):
+            with pytest.raises(RuntimeError):
+                for _ in model.named_parameters():
+                    pass
+            with pytest.raises(RuntimeError):
+                for _ in model.parameters():
+                    pass
+            # Early return for ssd_offload since we don't support parameters() or named_parameters().
+            return
+
         self._train_for_several_steps(model, 1, autocast=False)
 
         # Get the named parameters after wrapping to compare.
         after_wrap_params = model.named_parameters()
 
-        if not config["flatten_parameters"]:
+        if not config.get("flatten_parameters", False):
             for before_nm, after_nm in zip(before_wrap_params, after_wrap_params):
                 assert before_nm[0] == after_nm[0]
         else:

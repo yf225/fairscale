@@ -8,8 +8,8 @@ import glob
 import itertools
 import os
 import sys
+import time
 import unittest
-from unittest import mock
 
 from parameterized import parameterized
 import torch
@@ -19,10 +19,23 @@ import torch.distributed
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 from fairscale.nn.data_parallel import FullyShardedDataParallel, TrainingState
 from fairscale.utils import torch_version
-from fairscale.utils.testing import dist_init, get_cycles_per_ms, objects_are_equal, rmf, spawn_for_all_world_sizes
+from fairscale.utils.testing import dist_init, rmf, spawn_for_all_world_sizes
 
 # How to use remote-pdb: https://gist.github.com/sshleifer/9d43351957179c13606e015b072927d4
 # All helper functions called by spawn must be either @classmethod, @staticmethod
+
+
+class TimeKeeper:
+    def __init__(self):
+        self.start_time = time.time()
+
+    def print_time(self, s: str, wait_time: float = 5.0):
+        cur_time = time.time()
+        print(f"@time: {cur_time - self.start_time:0.2f} {s}")
+        time.sleep(wait_time)
+
+
+tk = TimeKeeper()
 
 
 class DistributedTest(unittest.TestCase):
@@ -37,32 +50,29 @@ class DistributedTest(unittest.TestCase):
             raise unittest.SkipTest("distributed tests require 2+ GPUs, skipping")
 
     @staticmethod
-    def _train_for_several_steps(model, num_steps, autocast, lr=0.01, norm_type=None):
-        model_device = next(model.parameters()).device
-        # use SGD with momentum instead of Adam, since Adam is scale invariant
-        # and this makes it bad for tests
-        optim = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
-        for _ in range(num_steps):
-            optim.zero_grad()
-            with torch.cuda.amp.autocast(enabled=autocast):
-                # Inputs always cuda regardless of move_grads_cpu, or model.device
-                input = model.module.get_input(torch.device("cuda"))
-                output = model(*input)
-                loss = model.module.get_loss(input, output).to(model_device)
-            assert loss.dtype == torch.float32
-            model.module.run_backward(loss)
-            if norm_type is not None:
-                clip_norm = 0.3
-                if isinstance(model, FullyShardedDataParallel):
-                    model.clip_grad_norm_(clip_norm, norm_type)
-                else:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip_norm, norm_type)
-            # for name, param in model.named_parameters():
-            # print(f"name {name} param {param.device} {param.storage().size()}")
-            # optim.step()
+    def _eval_with_config(model, autocast):
+        model_device = torch.device("cuda")
+        with torch.cuda.amp.autocast(enabled=autocast):
+            # Inputs always cuda regardless of move_grads_cpu, or model.device
+            input = model.module.get_input(torch.device("cuda"))
+            output = model(*input)
+            loss = model.module.get_loss(input, output).to(model_device)
+        assert loss.dtype == torch.float32
         if isinstance(model, FullyShardedDataParallel):
             model.assert_state(TrainingState.IDLE)
         return loss.detach()
+
+    @staticmethod
+    def _eval_for_several_steps(model, num_steps, autocast, lr=0.01, norm_type=None):
+        model.eval()
+        # Inputs always cuda regardless of move_grads_cpu, or model.device
+        input = model.module.get_input(torch.device("cuda"))
+
+        for _ in range(num_steps):
+            with torch.cuda.amp.autocast(enabled=autocast):
+                output = model(*input)
+
+            tk.print_time(f"eval step: {_}", 1.0)
 
     @staticmethod
     def get_wrapped_model(group, cuda_first=False, config={}, **model_kwargs) -> FullyShardedDataParallel:
@@ -74,7 +84,7 @@ class DistributedTest(unittest.TestCase):
 
     @classmethod
     def _test_identical_outputs(
-        cls, model_init_fn, config, rank, group, num_steps=2, use_cuda=True, lr=0.01, ref_ddp_fn=None, norm_type=2,
+        cls, model_init_fn, config, rank, group, num_steps=2, use_cuda=True, lr=0.01, ref_ddp_fn=None,
     ):
         if config.get("mixed_precision", False):
             autocast = True
@@ -94,7 +104,7 @@ class DistributedTest(unittest.TestCase):
             )
         else:
             model = ref_ddp_fn(model, group)
-        ref_loss = cls._train_for_several_steps(model, num_steps, autocast, lr=lr, norm_type=norm_type)
+        ref_loss = cls._eval_with_config(model, autocast)
         ref_state_dict = model.module.state_dict()
         if config.get("cpu_offload", False):
             for k in ref_state_dict.keys():
@@ -102,16 +112,15 @@ class DistributedTest(unittest.TestCase):
 
         # Confirm we get the same behavior using FullyShardedDataParallel.
         model = FullyShardedDataParallel(model_init_fn(group=group, wrapper_config=config), group, **config)
-        if use_cuda:
-            model = model.cuda()
-        else:
-            assert next(model.parameters()).device == torch.device("cpu")
-        shard_loss = cls._train_for_several_steps(model, num_steps, autocast, lr=lr, norm_type=norm_type)
-        shard_state_dict = model.state_dict()
+        if not config.get("ssd_offload", False):
+            if use_cuda:
+                model = model.cuda()
+            else:
+                assert next(model.parameters()).device == torch.device("cpu")
+        shard_loss = cls._eval_with_config(model, autocast)
 
         try:
             torch.testing.assert_allclose(ref_loss, shard_loss)
-            assert objects_are_equal(ref_state_dict, shard_state_dict, raise_exception=True)
         except (AssertionError, RuntimeError) as e:
             raise Exception(f"FullyShardedDataParallel didn't match PyTorch DDP using config: {config}\n\n {e}")
         if config.get("flatten_parameters", True):
@@ -127,16 +136,81 @@ def rename_test(testcase_func, param_num, param):
     return "%s_%s" % (testcase_func.__name__, parameterized.to_safe_name(str(param.args)),)
 
 
-class TestSsdLoading(DistributedTest):
-    @parameterized.expand(CONFIG_OPTIONS, name_func=rename_test)
-    def test_ssd_offloading(self, config):
-        # test_fn = functools.partial(self._test_simple_linear, config=config)
-        test_fn = functools.partial(self._test_ssd_offload, config=config)
+class TestSsdMemory(DistributedTest):
+    def test_memory_benchmark(self):
+        test_fn = functools.partial(self._test_memory_benchmark, config={})
         spawn_and_init(test_fn)
 
     @classmethod
-    def _test_ssd_offload(self, rank, group, config):
+    def _test_memory_benchmark(self, rank, group, config):
 
+        SIZE = 16 * 16
+        tk.print_time("START", 1.0)
+        a = torch.empty(1)
+        b = a.cuda()
+        # wait for cuda to fully load
+        time.sleep(5)
+        tk.print_time("INIT_CUDA", 1.0)
+        model = SimpleLinear(group, input_size=SIZE, output_size=SIZE, layers=4)
+        tk.print_time("CPU_MODEL", 1.0)
+
+        config["ssd_offload"] = True
+        model = FullyShardedDataParallel(model, **config)
+        tk.print_time("FSDP_MODEL", 1.0)
+
+        self._eval_for_several_steps(model, 4, autocast=False)
+        tk.print_time("TRAIN_1")
+
+        fileList = glob.glob(os.getcwd() + "/*_rank*")
+        for file in fileList:
+            rmf(file)
+
+
+class SimpleLinear(nn.Module):
+    def __init__(self, group, input_size, output_size, layers=1, **unused_kwargs):
+        super().__init__()
+        self.rank = group.rank()
+        self.world_size = group.size()
+        self.input_size = input_size
+        self.output_size = output_size
+        torch.manual_seed(0)  # keep everything deterministic
+        seq_layers = []
+        for i in range(layers):
+            seq_layers.append(nn.Linear(input_size, output_size, bias=False))
+        self.module = nn.Sequential(*seq_layers)
+        self.bs = 2
+
+    def get_input(self, device):
+        torch.manual_seed(1 + self.rank)  # keep everything deterministic
+        src = torch.rand((self.bs, self.input_size), device=device, dtype=torch.float32)
+        tgt = torch.rand((self.bs, self.input_size), device=device, dtype=torch.float32)
+        return (src, tgt)
+
+    def forward(self, src_ids, tgt_ids):
+        return self.module(src_ids)
+
+    def get_loss(self, input, output):
+        _, tgt = input
+
+        return nn.functional.binary_cross_entropy_with_logits(output, tgt)
+
+    def run_backward(self, loss):
+        loss.backward()
+
+
+class TestSsdLoading(DistributedTest):
+    @parameterized.expand(CONFIG_OPTIONS, name_func=rename_test)
+    def test_ssd_offloading(self, config):
+        test_fn = functools.partial(self._test_ssd_offload, config=config)
+        spawn_and_init(test_fn)
+
+    @parameterized.expand(CONFIG_OPTIONS, name_func=rename_test)
+    def test_transformer_parameterized(self, config):
+        # Test every combination of these options:
+        spawn_and_init(functools.partial(self._test_identical_outputs, TransformerWithSharedParams, config))
+
+    @classmethod
+    def _test_ssd_offload(self, rank, group, config):
         model = TransformerWithSharedParams(group)
         state_dict = model.state_dict()
 
@@ -151,14 +225,14 @@ class TestSsdLoading(DistributedTest):
             model = FullyShardedDataParallel(model, **config)
         if not config["ssd_offload"]:
             model = model.cuda()
-        self._train_for_several_steps(model, 1, autocast=config["mixed_precision"])
+        self._eval_with_config(model, autocast=config["mixed_precision"])
 
         # With SSD offload only local_state_dict will work. We can support global
         # state dict if we think it is necessary.
         state_dict = model.local_state_dict()
         model.load_local_state_dict(state_dict)
 
-        self._train_for_several_steps(model, 1, config["mixed_precision"])
+        self._eval_with_config(model, config["mixed_precision"])
 
         fileList = glob.glob(os.getcwd() + "/*_rank*")
         for file in fileList:
@@ -270,106 +344,6 @@ class DummyDDP(nn.Module):
 
     def forward(self, *args, **kwargs):
         return self.module(*args, **kwargs)
-
-
-class MixtureOfExperts(NestedWrappedModule):
-    def __init__(self, group, wrapper_config, checkpoint_act=False, delay_before_free_ms=0):
-        super().__init__(group, wrapper_config)
-        self.group = group
-        self.delay_before_free_ms = delay_before_free_ms
-
-        # "expert" params are different on each rank
-        torch.manual_seed(42 + group.rank())
-        d_expert = 23
-        d_shared = 12
-        d_input = 8
-        expert = nn.Linear(d_expert, d_shared)
-
-        self.num_expert_params = sum([p.numel() for p in expert.parameters()])
-        for p in expert.parameters():
-            p.expert = True
-
-        # everything else is shared
-        torch.manual_seed(0)
-
-        shared = nn.Linear(d_shared, d_expert)
-
-        if checkpoint_act:
-            expert = checkpoint_wrapper(expert)
-            shared = checkpoint_wrapper(shared)
-
-        if wrapper_config is not None:
-            # we create a process group of size 1 for the expert params
-            expert_group = torch.distributed.new_group([group.rank()])  # world size 1 means no shard
-            expert = FullyShardedDataParallel(expert, expert_group, **wrapper_config)
-
-            shared = FullyShardedDataParallel(shared, group, **wrapper_config)
-
-        self.module = nn.Sequential(nn.Linear(d_input, d_shared), shared, expert, nn.Linear(d_shared, d_input))
-
-    def forward(self, x):
-        if self.delay_before_free_ms > 0:
-            expert = self.module[2]
-            if isinstance(expert, FullyShardedDataParallel):
-                orig_free_full_params = self.module[2]._free_full_params
-
-                def _free_full_params_with_delay(*args):
-                    torch.cuda._sleep(int(self.delay_before_free_ms * get_cycles_per_ms()))
-                    return orig_free_full_params(*args)
-
-                assert hasattr(expert, "_free_full_params")
-                with mock.patch.object(expert, "_free_full_params", _free_full_params_with_delay):
-                    return self.module(x)
-
-        return self.module(x)
-
-    def run_backward(self, loss):
-        loss.backward()
-
-        # manually reduce gradients if not wrapped in FullyShardedDataParallel
-        if self.wrapper_config is None:
-            with torch.no_grad():
-                for p in self.parameters():
-                    if hasattr(p, "expert"):
-                        continue  # these params don't need grad reduction
-                    p.grad.data.div_(self.world_size)
-                    torch.distributed.all_reduce(p.grad.data, group=self.group)
-
-
-class ModuleWithDelay(nn.Module):
-    def __init__(self, module, delay_after_loss_ms=0, delay_before_reduction_ms=0):
-        super().__init__()
-        self.delay_after_loss_ms = delay_after_loss_ms
-        self.delay_before_reduction_ms = delay_before_reduction_ms
-        self.module = module
-
-    def get_input(self, device):
-        return self.module.get_input(device)
-
-    def forward(self, x):
-        return self.module(x)
-
-    def get_loss(self, input, output):
-        loss = self.module.get_loss(input, output)
-        if self.delay_after_loss_ms > 0:
-            torch.cuda._sleep(int(self.delay_after_loss_ms * get_cycles_per_ms()))
-        return loss
-
-    def run_backward(self, loss):
-        orig_reduce_scatter = torch.distributed.reduce_scatter
-
-        def _delayed_reduce_scatter(*args, **kwargs):
-            if self.delay_before_reduction_ms > 0:
-                torch.cuda._sleep(int(self.delay_before_reduction_ms * get_cycles_per_ms()))
-            return orig_reduce_scatter(*args, **kwargs)
-
-        with mock.patch("torch.distributed.reduce_scatter", _delayed_reduce_scatter):
-            self.module.run_backward(loss)
-
-
-class NestedWrappedModuleWithDelay(ModuleWithDelay):
-    def __init__(self, group, wrapper_config, **kwargs):
-        super().__init__(NestedWrappedModule(group, wrapper_config), **kwargs)
 
 
 def spawn_and_init(fn, args=None, **spawn_kwargs):

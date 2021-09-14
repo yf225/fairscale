@@ -5,12 +5,16 @@
 
 import functools
 import gc
+import itertools
 import unittest
 
 from parameterized import parameterized
 import torch
 
-from .test_fsdp import CONFIG_OPTIONS, DistributedTest, rename_test, spawn_and_init
+from .test_fsdp import DistributedTest, rename_test, spawn_and_init
+
+keys = ["reshard_after_forward", "mixed_precision", "flatten_parameters"]
+CONFIG_OPTIONS = [[dict(zip(keys, config))] for config in itertools.product([True, False], repeat=len(keys))]
 
 
 def get_cuda_mem():
@@ -31,6 +35,7 @@ class TestMemory(DistributedTest):
     @classmethod
     def _test_memory(self, config, rank, group, volatile=False):
         model = self.get_wrapped_model(group, cuda_first=False, config=config)
+
         self._train_for_several_steps(model, 1, autocast=model.mixed_precision)
 
         mems = [get_cuda_mem()]

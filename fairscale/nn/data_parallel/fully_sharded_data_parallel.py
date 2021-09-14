@@ -246,7 +246,7 @@ class FullyShardedDataParallel(nn.Module):
         reshard_after_forward: bool = True,
         mixed_precision: bool = False,
         fp32_reduce_scatter: bool = False,
-        flatten_parameters: bool = False,
+        flatten_parameters: bool = True,
         move_params_to_cpu: bool = False,
         compute_dtype: Optional[torch.dtype] = None,
         buffer_dtype: Optional[torch.dtype] = None,
@@ -302,6 +302,11 @@ class FullyShardedDataParallel(nn.Module):
         # enable pytorch sync_bn just in case model contains sync_bn layers.
         enable_pytorch_sync_bn(module)
 
+        # We set this boolean at the beginning to enable us to populate some of the
+        # metadata required for sharding and flattening. We don't use the tensor data
+        # of the parameters.
+        self.training_state = None
+
         # Only handle params which are not already sharded. This enables
         # sharding individual layers of a Module, with an outer wrapper to
         # shard any leftover parameters.
@@ -339,8 +344,6 @@ class FullyShardedDataParallel(nn.Module):
         self._num_flatten_params = len(self._fsdp_wrapped_module.flat_params)
         self._param_name_groups = param_name_groups
 
-        self.training_state = None
-
         for n, p in self.named_parameters():
             if not hasattr(p, "_filename"):
                 p._filename = f"{randint(1, int(10E6))}_rank{self.rank}"  # type: ignore
@@ -373,10 +376,9 @@ class FullyShardedDataParallel(nn.Module):
         # Flag to indicate whether state_dict() should automatically summon the
         # full params. This defaults to True, but may be set to False if the
         # user explicitly requests the local state dict via local_state_dict().
-        if self.ssd_offload:
-            self._return_full_state_dict = False
-        else:
-            self._return_full_state_dict = True
+        # TODO(anj): This should by default be set to False for ssd_offload=True
+        # unless we are in the summon_full_params context.
+        self._return_full_state_dict = True
         init_end = time.time()
 
         logging.debug(
@@ -700,6 +702,18 @@ class FullyShardedDataParallel(nn.Module):
 
         return super().parameters(recurse=recurse)
 
+    @contextlib.contextmanager
+    def _return_parameter_properties(self) -> Generator:
+        prev_training_state = self.training_state
+        self.training_state = None
+
+        assert self.ssd_offload
+
+        try:
+            yield
+        finally:
+            self.training_state = prev_training_state
+
     def named_parameters(self, prefix: str = "", recurse: bool = True) -> Iterator[Tuple[str, Parameter]]:
         """Returns an iterator over the module parameters, yielding both the name of the
         parameter as well as the parameter.
@@ -712,7 +726,7 @@ class FullyShardedDataParallel(nn.Module):
         under a `summon_full_params` context when using flattened or original params.
         """
 
-        if self.ssd_offload and self.training_state:
+        if self.ssd_offload and self.training_state is not None:
             raise RuntimeError(
                 "FSDP model doesn't support calling named_parameters() when "
                 + "ssd_offload is true. This is because the parameters returned will not "
@@ -1556,14 +1570,6 @@ class FullyShardedDataParallel(nn.Module):
             ``force_full_precision=False`` and the full params are already gathered.
         """
         output_tensors: List[Tuple[torch.Tensor, bool]] = []
-
-        if self.ssd_offload:
-            # The params are on disk and need to be moved to the CPU.
-            for p in self.params:
-                alloc_storage_(p._fp32_shard, p._shard_size)  # type: ignore
-                ssd_offload.read(p._fp32_shard.cpu(), p._filename, num_padded=p._num_padded)  # type: ignore
-                p._fp32_shard = p._fp32_shard.cuda()
-                p.data = p._fp32_shard
 
         def update_p_data(custom_output_tensor: Optional[torch.Tensor] = None) -> None:
             """
