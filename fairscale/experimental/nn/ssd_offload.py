@@ -162,7 +162,6 @@ class SsdTensorHandle(torch.Tensor):
         # valid if loaded to memory
         self.tensor: Optional[torch.Tensor] = None
         self.requires_grad = requires_grad
-        pass
 
     @classmethod
     def from_file(
