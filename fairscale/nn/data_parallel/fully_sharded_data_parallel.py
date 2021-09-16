@@ -319,6 +319,14 @@ class FullyShardedDataParallel(nn.Module):
 
         self._has_params = len(params) > 0
 
+        if self._has_params:
+            buffer_size = (sum(p.numel() for p in params))
+            if self.ssd_offload:
+                self.ssd_buffer_filename = f"{randint(1, int(10E6))}_rank{self.rank}" 
+                self.buffer_tensor = torch.empty((buffer_size,))
+                self.ssd_buffer = ssd_offload.SsdBuffer(self.buffer_tensor, self.ssd_buffer_filename)
+
+
         # For now, it is either all flatten or none flatten. This will be extended to
         # multiple flatten groups in my next PR.
         to_be_flatten_params: List[List[Parameter]] = [[]]
@@ -592,7 +600,7 @@ class FullyShardedDataParallel(nn.Module):
                 self.numel_padded_per_param.append(0)
                 if self.ssd_offload:
                     p._shard_size = p.data.size()  # type: ignore
-                    ssd_offload.write(p.data, p._filename)  # type: ignore
+                    p._ssd_handle = self.ssd_buffer.insert(p.data)
                 continue
             p._is_sharded = True
 
@@ -601,16 +609,18 @@ class FullyShardedDataParallel(nn.Module):
                 p.data, num_padded = self._get_shard(p.data)
                 p._num_padded = num_padded  # type: ignore
                 p._shard_size = p.size()  # type: ignore
-                ssd_offload.write(p.data, p._filename)  # type: ignore
+                p._ssd_handle = self.ssd_buffer.insert(p.data)
                 self.numel_padded_per_param.append(num_padded)
-                # TODO(anjs): Currently we free storage at the beginning of FW
-                # Should we be instead doing it here?
             else:
                 orig_data = p.data
                 p.data, num_padded = self._get_shard(p.data)
                 self.numel_padded_per_param.append(num_padded)
                 free_storage_(orig_data)
+
         assert len(self.numel_padded_per_param) == len(self.params)
+
+        if self.ssd_offload:
+            self.ssd_buffer.to_disk()
 
     def _get_shard(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, int]:
         """Return the local shard of a full tensor."""
@@ -830,10 +840,13 @@ class FullyShardedDataParallel(nn.Module):
         self._return_full_state_dict = False
 
         if self.ssd_offload:
-            for p in self.params:
-                alloc_storage_(p._fp32_shard, p._shard_size)  # type: ignore
-                ssd_offload.read(p._fp32_shard.cpu(), p._filename, num_padded=p._num_padded)  # type: ignore
-                p._fp32_shard = p._fp32_shard.cuda()
+            if self.ssd_buffer.buffer is None:
+                print(f"Loading from disk at local_state_dict")
+                self.ssd_buffer.from_disk(self.buffer_tensor)
+
+            for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
+                p._fp32_shard = handle.get_tensor()
+                # p.data = handle.get_tensor()
                 p.data = p._fp32_shard
 
         try:
@@ -1212,6 +1225,9 @@ class FullyShardedDataParallel(nn.Module):
         if self.reshard_after_forward and self.ssd_offload:
             # Free storage of the fp32 shard
             for p in self.params:
+                # TODO(anj): We need another function that enables us to drop the current
+                # tensors and not have to write to disk in the case of eval.
+                self.ssd_buffer.to_disk()
                 p._fp32_shard = torch.zeros_like(p._fp32_shard, device=torch.device("cpu"), dtype=p._fp32_shard.dtype)
                 free_storage_(p._fp32_shard)
                 p.data = p._fp32_shard
@@ -1598,10 +1614,12 @@ class FullyShardedDataParallel(nn.Module):
             p.data = p.data[: p._orig_size.numel()].view(p._orig_size)
 
         if self.ssd_offload:
+            # TODO(anj): we have a similar check elsewhere. Should we do this automatically?
+            if self.ssd_buffer.buffer is None:
+                self.ssd_buffer.from_disk(self.buffer_tensor)
             # The params are on disk and need to be moved to the CPU.
-            for p in self.params:
-                alloc_storage_(p._fp32_shard, p._shard_size)  # type: ignore
-                ssd_offload.read(p._fp32_shard.cpu(), p._filename, num_padded=p._num_padded)  # type: ignore
+            for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
+                p._fp32_shard = handle.get_tensor()
                 p._fp32_shard = p._fp32_shard.cuda()
                 p.data = p._fp32_shard
 

@@ -32,7 +32,7 @@ def _tensor_to_bytes_chunks(t: torch.Tensor, chunk_idx: int, chunk_size_bytes: i
 
 def write(t: torch.Tensor, filename: str, file_offset_bytes: int = 0) -> None:
     num_chunks = _get_num_chunks(t)
-    with open(filename, "r+b") as f:
+    with open(filename, "wb") as f:
         f.seek(file_offset_bytes)
         for i in range(num_chunks):
             f.write(_tensor_to_bytes_chunks(t, i))
@@ -260,15 +260,17 @@ class SsdTensorHandle(torch.Tensor):
 # more tensors
 class SsdBuffer:
     def __init__(self, buffer: torch.Tensor, filename: str) -> None:
+        # TODO(anj): Modify this to pass the size of the buffer rather
+        # than a tensor.
         self.buffer: Optional[torch.Tensor] = buffer
         self.filename = filename
         self.offset = 0
         self.tensors: Dict[int, SsdTensorHandle] = {}
 
     def allocate(self, n: int) -> SsdTensorHandle:
-        assert self.can_alloc(n)
         assert n > 0
         assert self.buffer is not None
+        assert self.can_alloc(n)
 
         tensor = self.buffer.narrow(0, self.offset, n)
 
@@ -281,6 +283,8 @@ class SsdBuffer:
 
     def insert(self, tensor: torch.Tensor) -> SsdTensorHandle:
         assert self.buffer is not None
+        # For the non sharded case, the tensor will not be flattened
+        tensor = tensor.reshape(-1)
         assert self.buffer.dtype == tensor.dtype
         handle = self.allocate(tensor.numel())
         handle.get_tensor().data.copy_(tensor.data)
@@ -295,6 +299,7 @@ class SsdBuffer:
 
     def to_disk(self) -> None:
         assert self.buffer is not None
+        # TODO(anj): Add comment about why we do this.
         valid_data = self.buffer.narrow(0, 0, self.offset)
         write(valid_data, self.filename)
 
@@ -314,6 +319,9 @@ class SsdBuffer:
         read(valid_data, self.filename)
 
         # Restore Tensor References
+        # We are book-keeping the offset in two places -
+        # both in the SSDTensorHandle and the SSD buffer.
+        # TODO(anj): Do we need to do this twice?
         for offset, t in self.tensors.items():
             t.point_to_tensor(self.buffer.narrow(0, t.offset, t._numel))
 
