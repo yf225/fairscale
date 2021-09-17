@@ -147,7 +147,7 @@ class SsdTensorHandle(torch.Tensor):
     ) -> SsdTensorHandle:
         # TODO: PJ/AS Pass in proper shape of tensor to ._make_subclass so that backward calculates gradients properly
         r = torch.Tensor._make_subclass(cls, torch.empty(()), requires_grad)
-        return r 
+        return r
 
     def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool) -> None:
         self._shape = shape

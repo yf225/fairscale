@@ -8,8 +8,8 @@ import copy
 from enum import Enum, auto
 import functools
 import logging
-from math import inf
 import math
+from math import inf
 from random import randint
 import time
 import traceback
@@ -321,12 +321,11 @@ class FullyShardedDataParallel(nn.Module):
         self._has_params = len(params) > 0
 
         if self._has_params:
-            buffer_size = (sum(p.numel() for p in params))
+            buffer_size = sum(p.numel() for p in params)
             if self.ssd_offload:
-                self.ssd_buffer_filename = f"{randint(1, int(10E6))}_rank{self.rank}" 
+                self.ssd_buffer_filename = f"{randint(1, int(10E6))}_rank{self.rank}"
                 self.buffer_tensor = torch.empty((buffer_size,))
                 self.ssd_buffer = ssd_offload.SsdBuffer(self.buffer_tensor, self.ssd_buffer_filename)
-
 
         # For now, it is either all flatten or none flatten. This will be extended to
         # multiple flatten groups in my next PR.

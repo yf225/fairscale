@@ -51,6 +51,7 @@ class DistributedTest(unittest.TestCase):
 
     @staticmethod
     def _eval_with_config(model, autocast):
+        model.eval()
         model_device = torch.device("cuda")
         with torch.cuda.amp.autocast(enabled=autocast):
             # Inputs always cuda regardless of move_grads_cpu, or model.device
@@ -61,9 +62,10 @@ class DistributedTest(unittest.TestCase):
         if isinstance(model, FullyShardedDataParallel):
             model.assert_state(TrainingState.IDLE)
         return loss.detach()
-    
+
     @staticmethod
     def _train_with_config(model, autocast):
+        model.train()
         model_device = torch.device("cuda")
         optim = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
         optim.zero_grad()
@@ -218,7 +220,6 @@ class SimpleLinear(nn.Module):
 
 
 class TestSsdLoading(DistributedTest):
-
     def test_ssd_offloading_train(self):
         test_fn = functools.partial(self._test_ssd_offload_train)
         spawn_and_init(test_fn)
@@ -240,7 +241,7 @@ class TestSsdLoading(DistributedTest):
 
         nested_wrapping = config["nested_wrapping"]
         del config["nested_wrapping"]
-        
+
         config["ssd_offload"] = True
         if nested_wrapping:
             model = FullyShardedDataParallel(NestedWrappedModule(group, wrap_everything=True, wrapper_config=config))
@@ -283,7 +284,6 @@ class TestSsdLoading(DistributedTest):
         optim.step()
         if isinstance(model, FullyShardedDataParallel):
             model.assert_state(TrainingState.IDLE)
-
 
         fileList = glob.glob(os.getcwd() + "/*_rank*")
         for file in fileList:
