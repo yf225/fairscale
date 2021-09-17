@@ -61,6 +61,23 @@ class DistributedTest(unittest.TestCase):
         if isinstance(model, FullyShardedDataParallel):
             model.assert_state(TrainingState.IDLE)
         return loss.detach()
+    
+    @staticmethod
+    def _train_with_config(model, autocast):
+        model_device = torch.device("cuda")
+        optim = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+        optim.zero_grad()
+        with torch.cuda.amp.autocast(enabled=autocast):
+            # Inputs always cuda regardless of move_grads_cpu, or model.device
+            input = model.module.get_input(torch.device("cuda"))
+            output = model(*input)
+            loss = model.module.get_loss(input, output).to(model_device)
+        assert loss.dtype == torch.float32
+        model.module.run_backward(loss)
+        optim.step()
+        if isinstance(model, FullyShardedDataParallel):
+            model.assert_state(TrainingState.IDLE)
+        return loss.detach()
 
     @staticmethod
     def _eval_for_several_steps(model, num_steps, autocast, lr=0.01, norm_type=None):
@@ -187,6 +204,8 @@ class SimpleLinear(nn.Module):
         return (src, tgt)
 
     def forward(self, src_ids, tgt_ids):
+        param_devices = [p.device for p in self.module.parameters()]
+
         return self.module(src_ids)
 
     def get_loss(self, input, output):
@@ -199,9 +218,14 @@ class SimpleLinear(nn.Module):
 
 
 class TestSsdLoading(DistributedTest):
+
+    def test_ssd_offloading_train(self):
+        test_fn = functools.partial(self._test_ssd_offload_train)
+        spawn_and_init(test_fn)
+
     @parameterized.expand(CONFIG_OPTIONS, name_func=rename_test)
-    def test_ssd_offloading(self, config):
-        test_fn = functools.partial(self._test_ssd_offload, config=config)
+    def test_ssd_offloading_eval(self, config):
+        test_fn = functools.partial(self._test_ssd_offload_eval, config=config)
         spawn_and_init(test_fn)
 
     @parameterized.expand(CONFIG_OPTIONS, name_func=rename_test)
@@ -210,14 +234,13 @@ class TestSsdLoading(DistributedTest):
         spawn_and_init(functools.partial(self._test_identical_outputs, TransformerWithSharedParams, config))
 
     @classmethod
-    def _test_ssd_offload(self, rank, group, config):
+    def _test_ssd_offload_eval(self, rank, group, config):
         model = TransformerWithSharedParams(group)
         state_dict = model.state_dict()
 
         nested_wrapping = config["nested_wrapping"]
         del config["nested_wrapping"]
-        # Train the model for 1 step.
-
+        
         config["ssd_offload"] = True
         if nested_wrapping:
             model = FullyShardedDataParallel(NestedWrappedModule(group, wrap_everything=True, wrapper_config=config))
@@ -232,7 +255,35 @@ class TestSsdLoading(DistributedTest):
         state_dict = model.local_state_dict()
         model.load_local_state_dict(state_dict)
 
-        # self._eval_with_config(model, config["mixed_precision"])
+        self._eval_with_config(model, config["mixed_precision"])
+
+        fileList = glob.glob(os.getcwd() + "/*_rank*")
+        for file in fileList:
+            rmf(file)
+
+    @classmethod
+    def _test_ssd_offload_train(self, rank, group):
+        SIZE = 16 * 16
+
+        config = {}
+        config["ssd_offload"] = True
+        config["mixed_precision"] = False
+        model = FullyShardedDataParallel(SimpleLinear(group, input_size=SIZE, output_size=SIZE, layers=4), **config)
+        model_device = torch.device("cuda")
+        optim = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+        optim.zero_grad()
+        # Inputs always cuda regardless of move_grads_cpu, or model.device
+        input = model.get_input(torch.device("cuda"))
+        output = model(*input)
+        loss = model.module.get_loss(input, output).to(model_device)
+        print(f"loss.requires_grad {loss} {loss.requires_grad}")
+
+        assert loss.dtype == torch.float32
+        model.module.run_backward(loss)
+        optim.step()
+        if isinstance(model, FullyShardedDataParallel):
+            model.assert_state(TrainingState.IDLE)
+
 
         fileList = glob.glob(os.getcwd() + "/*_rank*")
         for file in fileList:

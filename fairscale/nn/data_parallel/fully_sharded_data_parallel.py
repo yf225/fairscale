@@ -9,6 +9,7 @@ from enum import Enum, auto
 import functools
 import logging
 from math import inf
+import math
 from random import randint
 import time
 import traceback
@@ -371,7 +372,8 @@ class FullyShardedDataParallel(nn.Module):
         self._require_backward_grad_sync: bool = True
 
         # Enum to indicate if we're in the forward/backward pass, idle, etc.
-        self.training_state = TrainingState.IDLE
+        if not self.ssd_offload:
+            self.training_state = TrainingState.IDLE
 
         # Flag to indicate if the full params are gathered.
         self.has_full_params: bool = False
@@ -600,16 +602,15 @@ class FullyShardedDataParallel(nn.Module):
                 self.numel_padded_per_param.append(0)
                 if self.ssd_offload:
                     p._shard_size = p.data.size()  # type: ignore
-                    p._ssd_handle = self.ssd_buffer.insert(p.data)
+                    self.ssd_buffer.insert(p.data)
                 continue
             p._is_sharded = True
 
             # Replace p.data with the relevant shard.
             if self.ssd_offload:
                 p.data, num_padded = self._get_shard(p.data)
-                p._num_padded = num_padded  # type: ignore
                 p._shard_size = p.size()  # type: ignore
-                p._ssd_handle = self.ssd_buffer.insert(p.data)
+                self.ssd_buffer.insert(p.data)
                 self.numel_padded_per_param.append(num_padded)
             else:
                 orig_data = p.data
@@ -841,12 +842,10 @@ class FullyShardedDataParallel(nn.Module):
 
         if self.ssd_offload:
             if self.ssd_buffer.buffer is None:
-                print(f"Loading from disk at local_state_dict")
                 self.ssd_buffer.from_disk(self.buffer_tensor)
 
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
                 p._fp32_shard = handle.get_tensor()
-                # p.data = handle.get_tensor()
                 p.data = p._fp32_shard
 
         try:
@@ -1191,6 +1190,11 @@ class FullyShardedDataParallel(nn.Module):
             self._streams["all_gather"].wait_stream(torch.cuda.current_stream())
 
     def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
+        # TODO(anj): Can we do this for non offload cases as well?
+        # We need this because a new named_parameters call was added to init()
+        if self.ssd_offload:
+            self.training_state = TrainingState.IDLE
+
         self._lazy_init()
 
         # Start of a forward pass.
@@ -1224,10 +1228,10 @@ class FullyShardedDataParallel(nn.Module):
 
         if self.reshard_after_forward and self.ssd_offload:
             # Free storage of the fp32 shard
+            self.ssd_buffer.to_disk()
             for p in self.params:
                 # TODO(anj): We need another function that enables us to drop the current
                 # tensors and not have to write to disk in the case of eval.
-                self.ssd_buffer.to_disk()
                 p._fp32_shard = torch.zeros_like(p._fp32_shard, device=torch.device("cpu"), dtype=p._fp32_shard.dtype)
                 free_storage_(p._fp32_shard)
                 p.data = p._fp32_shard
@@ -1619,7 +1623,8 @@ class FullyShardedDataParallel(nn.Module):
                 self.ssd_buffer.from_disk(self.buffer_tensor)
             # The params are on disk and need to be moved to the CPU.
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                p._fp32_shard = handle.get_tensor()
+                p._fp32_shard = handle.get_tensor().view(p._shard_size)
+                # TODO(anjs): make this simiar to mixed precision
                 p._fp32_shard = p._fp32_shard.cuda()
                 p.data = p._fp32_shard
 
