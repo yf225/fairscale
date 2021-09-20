@@ -276,11 +276,12 @@ class TestSsdLoading(DistributedTest):
             ssd_handle = so.SsdTensorHandle.from_tensor(orig_tensor)
             ssd_handle.set_file_params(f.name, 0)
             ssd_handle.to_file(release_tensor_after_write=True)
+
+            assert torch.equal(ssd_handle.to_tensor(), orig_tensor)
             optimizer_ssd = torch.optim.SGD([ssd_handle], lr=0.1)
 
             y1 = ssd_handle + 1
             optimizer_ssd.zero_grad()
-
             y1.sum().backward()
             optimizer_ssd.step()
 
