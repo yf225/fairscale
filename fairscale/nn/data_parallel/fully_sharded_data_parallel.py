@@ -320,12 +320,13 @@ class FullyShardedDataParallel(nn.Module):
 
         self._has_params = len(params) > 0
 
-        if self._has_params:
-            buffer_size = sum(p.numel() for p in params)
-            if self.ssd_offload:
-                self.ssd_buffer_filename = f"{randint(1, int(10E6))}_rank{self.rank}"
-                self.buffer_tensor = torch.empty((buffer_size,))
-                self.ssd_buffer = ssd_offload.SsdBuffer(self.buffer_tensor, self.ssd_buffer_filename)
+        # TODO(anj): Should we conditionally do this only if we have params?    
+        buffer_size = sum(p.numel() for p in params)
+        if self.ssd_offload:
+            self.ssd_buffer_filename = f"{randint(1, int(10E6))}_rank{self.rank}"
+            self.buffer_tensor = torch.empty((buffer_size,))
+            print(f"buffer_size {buffer_size}")
+            self.ssd_buffer = ssd_offload.SsdBuffer(self.buffer_tensor, self.ssd_buffer_filename)
 
         # For now, it is either all flatten or none flatten. This will be extended to
         # multiple flatten groups in my next PR.
@@ -607,10 +608,13 @@ class FullyShardedDataParallel(nn.Module):
 
             # Replace p.data with the relevant shard.
             if self.ssd_offload:
+                orig_data = p.data
                 p.data, num_padded = self._get_shard(p.data)
                 p._shard_size = p.size()  # type: ignore
                 self.ssd_buffer.insert(p.data)
                 self.numel_padded_per_param.append(num_padded)
+                free_storage_(orig_data)
+                print(f"p.data.size {p.data.size()} p.data.device {p.data.device}")
             else:
                 orig_data = p.data
                 p.data, num_padded = self._get_shard(p.data)
@@ -1225,7 +1229,7 @@ class FullyShardedDataParallel(nn.Module):
             if self.mixed_precision:
                 self._free_fp16_param_shard()
 
-        if self.reshard_after_forward and self.ssd_offload:
+        if self.ssd_offload:
             # Free storage of the fp32 shard
             self.ssd_buffer.to_disk()
             for p in self.params:

@@ -223,6 +223,10 @@ class TestSsdLoading(DistributedTest):
     def test_ssd_offloading_train(self):
         test_fn = functools.partial(self._test_ssd_offload_train)
         spawn_and_init(test_fn)
+    
+    def test_ssd_offloading_train_simple(self):
+        test_fn = functools.partial(self._test_ssd_offload_train_simple)
+        spawn_and_init(test_fn)
 
     @parameterized.expand(CONFIG_OPTIONS, name_func=rename_test)
     def test_ssd_offloading_eval(self, config):
@@ -261,6 +265,28 @@ class TestSsdLoading(DistributedTest):
         fileList = glob.glob(os.getcwd() + "/*_rank*")
         for file in fileList:
             rmf(file)
+
+    @classmethod
+    def _test_ssd_offload_train_simple(self, rank, group):
+        import fairscale.experimental.nn.ssd_offload as so
+        import tempfile
+
+        with tempfile.NamedTemporaryFile() as f:
+            orig_tensor = torch.randn((4,4), requires_grad=True)
+            ssd_handle = so.SsdTensorHandle.from_tensor(orig_tensor)
+            ssd_handle.set_file_params(f.name, 0)
+            ssd_handle.to_file(release_tensor_after_write=True)
+            optimizer_ssd = torch.optim.SGD([ssd_handle], lr=0.1)
+
+            y1 = ssd_handle + 1
+            optimizer_ssd.zero_grad()
+
+            y1.sum().backward()
+            optimizer_ssd.step()
+
+            print(f"ssd_handle: {ssd_handle.to_tensor()}")
+            print(f"orig: {orig_tensor}")
+            assert torch.equal(ssd_handle.to_tensor(), orig_tensor)
 
     @classmethod
     def _test_ssd_offload_train(self, rank, group):
