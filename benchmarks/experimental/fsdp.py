@@ -5,24 +5,23 @@
 
 import argparse
 from collections import defaultdict
-from functools import reduce
 import functools
+from functools import reduce
 import gc
 import logging
 import math
 import operator
+import operator as op
 import time
 
 import numpy as np
+import psutil
+from pynvml import nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlInit
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import Adam
-import torch.multiprocessing as mp
-import psutil
-
-import gc
-import operator as op
 
 from benchmarks.datasets.wikitext2_data import get_real_dataloaders as get_real_wikitext2_dataloaders
 from benchmarks.datasets.wikitext2_data import get_synthetic_dataloaders as get_synthetic_wikitext2_dataloaders
@@ -30,8 +29,6 @@ from benchmarks.golden_configs.lm_wikitext2 import Pipe as lm_wikitext2
 from benchmarks.models import transformer_lm
 from fairscale.nn import auto_wrap, default_auto_wrap_policy, enable_wrap
 from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
-from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
-
 
 RPC_PORT = 29501
 
@@ -41,6 +38,7 @@ def init_nvml_profiling(rank):
     handle = nvmlDeviceGetHandleByIndex(rank)
     info = nvmlDeviceGetMemoryInfo(handle)
     return info
+
 
 def init_random_seed(seed: int):
 
@@ -225,13 +223,16 @@ def train(model_config, model, benchmark_config, model_specs, args):
     else:
         return 0.0, 0.0
 
+
 def eval(model_config, model, benchmark_config, model_specs, args):
     print(f"Benchmarking Eval..")
     info = init_nvml_profiling(torch.distributed.get_rank())
     if torch.distributed.get_rank() == 0:
         print("----------------------------------------------------------")
         print(f"1---- CPU: {psutil.virtual_memory()}")
-        print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+        print(
+            f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+        )
         print(f"Total memory: {info.total/2**30}")
         print(f"Free memory: {info.free/2**30}")
         print(f"Used memory: {info.used/2**30}")
@@ -239,7 +240,9 @@ def eval(model_config, model, benchmark_config, model_specs, args):
     if torch.distributed.get_rank() == 0:
         print("----------------------------------------------------------")
         print(f"2 ---- CPU: {psutil.virtual_memory()}")
-        print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+        print(
+            f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+        )
         print(f"Total memory: {info.total/2**30}")
         print(f"Free memory: {info.free/2**30}")
         print(f"Used memory: {info.used/2**30}")
@@ -247,7 +250,9 @@ def eval(model_config, model, benchmark_config, model_specs, args):
     if torch.distributed.get_rank() == 0:
         print("----------------------------------------------------------")
         print(f"3 ---- CPU: {psutil.virtual_memory()}")
-        print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+        print(
+            f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+        )
         print(f"Total memory: {info.total/2**30}")
         print(f"Free memory: {info.free/2**30}")
         print(f"Used memory: {info.used/2**30}")
@@ -255,7 +260,9 @@ def eval(model_config, model, benchmark_config, model_specs, args):
     if torch.distributed.get_rank() == 0:
         print("----------------------------------------------------------")
         print(f"4 ---- CPU: {psutil.virtual_memory()}")
-        print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+        print(
+            f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+        )
         print(f"Total memory: {info.total/2**30}")
         print(f"Free memory: {info.free/2**30}")
         print(f"Used memory: {info.used/2**30}")
@@ -264,7 +271,7 @@ def eval(model_config, model, benchmark_config, model_specs, args):
     # log_number_of_parameters(model)
 
     total_loss = 0.0
-    
+
     total_tokens = 0
     total_tokens_per_log_interval = 0
     start_time = time.time()
@@ -281,7 +288,9 @@ def eval(model_config, model, benchmark_config, model_specs, args):
         if torch.distributed.get_rank() == 0:
             print("----------------------------------------------------------")
             print(f"5 ---- CPU: {psutil.virtual_memory()}")
-            print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+            print(
+                f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+            )
             print(f"Total memory: {info.total/2**30}")
             print(f"Free memory: {info.free/2**30}")
             print(f"Used memory: {info.used/2**30}")
@@ -295,24 +304,25 @@ def eval(model_config, model, benchmark_config, model_specs, args):
 
         if i > 0:
             total_tokens += source.numel()
- 
 
         if torch.distributed.get_rank() == 0:
             print("----------------------------------------------------------")
             print(f"Before Eval inside loop {i} ---- CPU: {psutil.virtual_memory()}")
-            print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+            print(
+                f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+            )
             print(f"Total memory: {info.total/2**30}")
             print(f"Free memory: {info.free/2**30}")
             print(f"Used memory: {info.used/2**30}")
             for obj in gc.get_objects():
                 try:
-                    if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                    if torch.is_tensor(obj) or (hasattr(obj, "data") and torch.is_tensor(obj.data)):
                         print(type(obj), obj.size(), obj.device)
                 except:
                     pass
             print("----------------------------------------------------------")
             print(f"\n\n EVAL begins for iteration {i}")
-        
+
         input = source.cuda()
         target = target.cuda()
 
@@ -320,21 +330,23 @@ def eval(model_config, model, benchmark_config, model_specs, args):
             output = model(input)
 
         if torch.distributed.get_rank() == 0:
-            
+
             print("----------------------------------------------------------")
             print(f"After Eval inside loop {i} ---- CPU: {psutil.virtual_memory()}")
-            print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+            print(
+                f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+            )
             print(f"Total memory: {info.total/2**30}")
             print(f"Free memory: {info.free/2**30}")
             print(f"Used memory: {info.used/2**30}")
             for obj in gc.get_objects():
                 try:
-                    if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                    if torch.is_tensor(obj) or (hasattr(obj, "data") and torch.is_tensor(obj.data)):
                         print(type(obj), obj.size(), obj.device)
                 except:
                     pass
             print("----------------------------------------------------------")
-            
+
             print(f"\n\n EVAL ends for iteration {i}")
 
         loss = criterion(output.view(-1, vocab_size), target.view(-1))
@@ -353,7 +365,6 @@ def eval(model_config, model, benchmark_config, model_specs, args):
             total_tokens_per_log_interval = 0
             total_loss = 0
             start_time = time.time()
-        
 
     if epoch_start_time != 0:
         torch.cuda.synchronize()
@@ -366,7 +377,6 @@ def eval(model_config, model, benchmark_config, model_specs, args):
         return wps, loss.item()
     else:
         return 0.0, 0.0
-
 
 
 def get_number_of_words(data):
@@ -470,8 +480,10 @@ def benchmark_single_process(rank, args):
     torch.cuda.set_device(rank)
     info = init_nvml_profiling(rank)
     init_method_pgroup = "tcp://localhost:{}".format(RPC_PORT)
-    
-    torch.distributed.init_process_group(backend="nccl", rank=rank, world_size=torch.cuda.device_count(), init_method=init_method_pgroup)
+
+    torch.distributed.init_process_group(
+        backend="nccl", rank=rank, world_size=torch.cuda.device_count(), init_method=init_method_pgroup
+    )
 
     torch.distributed.all_reduce(torch.ones((1, 1)).cuda())
 
@@ -481,13 +493,15 @@ def benchmark_single_process(rank, args):
     if torch.distributed.get_rank() == 0:
         print("----------------------------------------------------------")
         print(f"Before Model Loading ---- CPU: {psutil.virtual_memory()}")
-        print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+        print(
+            f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+        )
         print(f"Total memory: {info.total/2**30}")
         print(f"Free memory: {info.free/2**30}")
         print(f"Used memory: {info.used/2**30}")
         for obj in gc.get_objects():
             try:
-                if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                if torch.is_tensor(obj) or (hasattr(obj, "data") and torch.is_tensor(obj.data)):
                     print(type(obj), obj.size(), obj.device)
             except:
                 pass
@@ -502,13 +516,15 @@ def benchmark_single_process(rank, args):
     if torch.distributed.get_rank() == 0:
         print("----------------------------------------------------------")
         print(f"After Model Loading Before FSDP Wrap ---- CPU: {psutil.virtual_memory()}")
-        print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+        print(
+            f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+        )
         print(f"Total memory: {info.total/2**30}")
         print(f"Free memory: {info.free/2**30}")
         print(f"Used memory: {info.used/2**30}")
         for obj in gc.get_objects():
             try:
-                if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                if torch.is_tensor(obj) or (hasattr(obj, "data") and torch.is_tensor(obj.data)):
                     print(type(obj), obj.size(), obj.device)
             except:
                 pass
@@ -526,13 +542,15 @@ def benchmark_single_process(rank, args):
     if torch.distributed.get_rank() == 0:
         print("----------------------------------------------------------")
         print(f"After FSDP Wrap ---- CPU: {psutil.virtual_memory()}")
-        print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+        print(
+            f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+        )
         print(f"Total memory: {info.total/2**30}")
         print(f"Free memory: {info.free/2**30}")
         print(f"Used memory: {info.used/2**30}")
         for obj in gc.get_objects():
             try:
-                if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                if torch.is_tensor(obj) or (hasattr(obj, "data") and torch.is_tensor(obj.data)):
                     print(type(obj), obj.size(), obj.device)
             except:
                 pass
@@ -544,33 +562,37 @@ def benchmark_single_process(rank, args):
             if torch.distributed.get_rank() == 0:
                 print("----------------------------------------------------------")
                 print(f"0 ---- CPU: {psutil.virtual_memory()}")
-                print(f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}")
+                print(
+                    f"GPU: torch.cuda.max_memory_allocated:{torch.cuda.max_memory_allocated(0)/2**30} torch.cuda.memory_allocated:{torch.cuda.memory_allocated(0)/2**30}"
+                )
                 print(f"Total memory: {info.total/2**30}")
                 print(f"Free memory: {info.free/2**30}")
                 print(f"Used memory: {info.used/2**30}")
             eval(model_config, fsdp_model, benchmark_config, model_specs, args)
     else:
         benchmark_language_model(model_config, fsdp_model, benchmark_config, model_specs, args)
-    
+
     torch.cuda.empty_cache()
     if torch.distributed.get_rank() == 0:
-        from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
+        from pynvml import nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlInit
+
         nvmlInit()
         handle = nvmlDeviceGetHandleByIndex(rank)
         info = nvmlDeviceGetMemoryInfo(handle)
-        print("\n\n Total memory:", info.total/2**30)
-        print("Free memory:", info.free/2**30)
-        print("Used memory:", info.used/2**30)
+        print("\n\n Total memory:", info.total / 2 ** 30)
+        print("Free memory:", info.free / 2 ** 30)
+        print("Used memory:", info.used / 2 ** 30)
         print(f"After eval CPU: {psutil.virtual_memory()} GPU {torch.cuda.max_memory_allocated(rank)/2**30}")
         torch.cuda.empty_cache()
         gc.collect()
 
         for obj in gc.get_objects():
             try:
-                if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                if torch.is_tensor(obj) or (hasattr(obj, "data") and torch.is_tensor(obj.data)):
                     print(type(obj), obj.size(), obj.device)
             except:
                 pass
+
 
 parser = argparse.ArgumentParser(description="benchmark")
 parser.add_argument(
@@ -582,7 +604,9 @@ parser.add_argument(
     default=False,
     help="Test training instead of eval. This is a stopgap benchmark till we support SSD offload + training.",
 )
-parser.add_argument("--min_wrap_params", type=int, default=1e8, help="Maximum number of params before we FSDP wrap a module.")
+parser.add_argument(
+    "--min_wrap_params", type=int, default=1e8, help="Maximum number of params before we FSDP wrap a module."
+)
 parser.add_argument("--max_batch", type=int, default=4, help="Max number of batches")
 parser.add_argument("--use_synthetic_data", action="store_true", help="Uses synthetic data for running benchmarks.")
 parser.add_argument("--dry_run", action="store_true", help="Run a sample training run without regression testing.")

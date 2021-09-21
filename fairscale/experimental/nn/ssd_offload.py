@@ -238,6 +238,7 @@ class SsdTensorHandle(torch.Tensor):
         ssd_tensor_handles = []
 
         def unwrap(e):
+            print(f"e {e}")
             if isinstance(e, SsdTensorHandle):
                 t = e.to_tensor()
                 ssd_tensor_handles.append((e, t._version))

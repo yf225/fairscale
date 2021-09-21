@@ -221,9 +221,15 @@ class SimpleLinear(nn.Module):
 
 class TestSsdLoading(DistributedTest):
     def test_ssd_offloading_train(self):
+        # test_fn = functools.partial(self._test_ssd_offload_train)
+        # spawn_and_init(test_fn)
+        import tempfile
         test_fn = functools.partial(self._test_ssd_offload_train)
-        spawn_and_init(test_fn)
-    
+        dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
+        group = torch.distributed.new_group()
+        test_fn(0, group)
+
+
     def test_ssd_offloading_train_simple(self):
         test_fn = functools.partial(self._test_ssd_offload_train_simple)
         spawn_and_init(test_fn)
@@ -268,22 +274,35 @@ class TestSsdLoading(DistributedTest):
 
     @classmethod
     def _test_ssd_offload_train_simple(self, rank, group):
-        import fairscale.experimental.nn.ssd_offload as so
         import tempfile
 
+        import fairscale.experimental.nn.ssd_offload as so
+
         with tempfile.NamedTemporaryFile() as f:
-            orig_tensor = torch.randn((4,4), requires_grad=True)
+            orig_tensor = torch.randn((4, 4), requires_grad=True)
+
+            with torch.no_grad():
+                orig_copy = torch.empty_like(orig_tensor)
+                orig_copy.copy_(orig_tensor)
+                orig_copy.requires_grad = True
+
             ssd_handle = so.SsdTensorHandle.from_tensor(orig_tensor)
             ssd_handle.set_file_params(f.name, 0)
             ssd_handle.to_file(release_tensor_after_write=True)
 
             assert torch.equal(ssd_handle.to_tensor(), orig_tensor)
             optimizer_ssd = torch.optim.SGD([ssd_handle], lr=0.1)
+            optimizer_orig = torch.optim.SGD([orig_copy], lr=0.1)
 
             y1 = ssd_handle + 1
             optimizer_ssd.zero_grad()
             y1.sum().backward()
             optimizer_ssd.step()
+
+            y2 = orig_copy + 1
+            optimizer_orig.zero_grad()
+            y2.sum().backward()
+            optimizer_orig.step()
 
             print(f"ssd_handle: {ssd_handle.to_tensor()}")
             print(f"orig: {orig_tensor}")
@@ -297,7 +316,10 @@ class TestSsdLoading(DistributedTest):
         config["ssd_offload"] = True
         config["mixed_precision"] = False
         model = FullyShardedDataParallel(SimpleLinear(group, input_size=SIZE, output_size=SIZE, layers=4), **config)
+        if not config["ssd_offload"]:
+            model = model.cuda()
         model_device = torch.device("cuda")
+        print(f"model.parameters {[type(p.data) for p in model.parameters()]}")
         optim = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
         optim.zero_grad()
         # Inputs always cuda regardless of move_grads_cpu, or model.device
@@ -309,12 +331,12 @@ class TestSsdLoading(DistributedTest):
         assert loss.dtype == torch.float32
         model.module.run_backward(loss)
         optim.step()
-        if isinstance(model, FullyShardedDataParallel):
-            model.assert_state(TrainingState.IDLE)
+        # if isinstance(model, FullyShardedDataParallel):
+        #     model.assert_state(TrainingState.IDLE)
 
-        fileList = glob.glob(os.getcwd() + "/*_rank*")
-        for file in fileList:
-            rmf(file)
+        # fileList = glob.glob(os.getcwd() + "/*_rank*")
+        # for file in fileList:
+        #     rmf(file)
 
 
 class TransformerWithSharedParams(nn.Module):
