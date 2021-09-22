@@ -3,6 +3,10 @@
 # This source code is licensed under the BSD license found in the
 # LICENSE file in the root directory of this source tree.
 
+# pylint: disable=missing-module-docstring
+# pylint: disable=missing-class-docstring
+# pylint: disable=missing-function-docstring
+
 from fairscale.experimental.nn import BaselineSoftmax, TopKSoftmax, TopKSoftmaxFaiss
 from fairscale.experimental.nn.sparse_softmax import get_data
 from fairscale.utils.testing import skip_if_no_cuda

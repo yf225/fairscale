@@ -3,6 +3,7 @@
 # This source code is licensed under the BSD license found in the
 # LICENSE file in the root directory of this source tree.
 
+import contextlib
 from pprint import pprint
 import time
 
@@ -11,6 +12,7 @@ from torch.cuda import Event
 
 from fairscale.experimental.nn import BaselineSoftmax, TopKSoftmax, TopKSoftmaxFaiss
 from fairscale.experimental.nn.sparse_softmax import get_data
+from fairscale.utils.testing import get_smi_memory
 
 """ Benchmarking various softmax kernels with label and top-K sparsity. """
 
@@ -24,10 +26,14 @@ SHAPES = [
 KERNELS = [BaselineSoftmax, TopKSoftmax, TopKSoftmaxFaiss]
 
 
-def run_on_gpu(kernel, data, repeats):
+def run_on_gpu(kernel, data, repeats, no_grad):
     input, weight, target = data
 
-    # Ensure GPU memory is 0
+    # Ensure GPU memory is minimal and get_smi_memory is good
+    cur_mem_before = round(torch.cuda.memory_allocated() / 1024 / 1024)
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    smi_mem_before = get_smi_memory()
 
     # Create the kernel
     k = kernel(weight, 200)
@@ -38,9 +44,15 @@ def run_on_gpu(kernel, data, repeats):
     # Queue the ops to GPU
     cpu_start_time = time.time()
     for i in range(repeats):
-        events[i].record()
-        k(input, target)
+        context = contextlib.suppress()
+        if no_grad:
+            context = torch.no_grad()
+        with context:
+            events[i].record()
+            k(input, target)
+    # Cpu is done
     cpu_time = time.time() - cpu_start_time
+    # Might wait for gpu here
     torch.cuda.synchronize()
 
     # Get the durations
@@ -49,7 +61,11 @@ def run_on_gpu(kernel, data, repeats):
         durations.append(x.elapsed_time(y))
 
     # Get peak mem
-    peak_mem = 0
+    cur_mem_after = round(torch.cuda.memory_allocated() / 1024 / 1024)
+    peak_mem_after = round(torch.cuda.max_memory_allocated() / 1024 / 1024)
+    assert cur_mem_after == cur_mem_before, "torch GPU memory was leaked by the kernel"
+    smi_mem_after = get_smi_memory()
+    peak_mem = max(peak_mem_after - cur_mem_before, smi_mem_after - smi_mem_before)
 
     return peak_mem, durations
 
@@ -66,7 +82,7 @@ def main():
         data = get_data(shape[1:])
         for kernel in KERNELS:
             k_name = kernel.__name__
-            peak_mem, durations = run_on_gpu(kernel, data, repeats)
+            peak_mem, durations = run_on_gpu(kernel, data, repeats, False)
             results["peak_mem"][name][k_name] = peak_mem
             results["durations"][name][k_name] = durations
     pprint(results)
