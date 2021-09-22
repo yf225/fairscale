@@ -79,6 +79,9 @@ class TopKSoftmax(nn.Module):
         return x
 
 
+_res = None
+
+
 class TopKSoftmaxFaiss(nn.Module):
     """ TopK softmax that uses FAISS's fused project & top-K to reduce GPU memory.
 
@@ -89,13 +92,15 @@ class TopKSoftmaxFaiss(nn.Module):
     def __init__(self, proj_weight: torch.nn.Parameter, k: int):
         super().__init__()
         self.k = k
-        self.res = faiss.StandardGpuResources()
-        self.res.setTempMemory(1024 * 1024 * 100)
+        global _res
+        if _res is None:
+            _res = faiss.StandardGpuResources()
+            _res.setTempMemory(1024 * 1024 * 10)
         self.b = proj_weight.data
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
         input, target = input
-        D, I = faiss.knn_gpu(self.res, input, self.b, self.k)
+        D, I = faiss.knn_gpu(_res, input, self.b, self.k)
         # TODO: add in target
         return D

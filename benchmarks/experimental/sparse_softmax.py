@@ -18,6 +18,7 @@ from fairscale.experimental.nn.sparse_softmax import get_data
 
 SHAPES = [
     # name, activation, FC weights
+    ("1k_128h_256k", (1024, 128), (128, 256 * 1024)),
     ("4k_128h_256k", (4096, 128), (128, 256 * 1024)),
 ]
 KERNELS = [BaselineSoftmax, TopKSoftmax, TopKSoftmaxFaiss]
