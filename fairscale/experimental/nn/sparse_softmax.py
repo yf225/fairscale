@@ -13,23 +13,24 @@ from torch import nn
 import torch.nn.functional as F
 
 
-def get_data(shape: Tuple[Tuple[int, int], Tuple[int, int]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def get_data(shape: Tuple[Tuple[int, int], Tuple[int, int]]) -> Tuple[torch.Tensor, torch.nn.Parameter, torch.Tensor]:
     """ Utility function for getting some tensors for testing and benchmarking."""
     (tokens, d1), (d2, vocabs) = shape
     assert d1 == d2
-    input = torch.rand(tokens, d1)
-    weight = torch.rand(d2, vocabs)
-    target = (torch.rand(tokens) * vocabs).long()
+    input = torch.rand(tokens, d1, device="cuda")
+    weight = nn.Linear(d2, vocabs, bias=False, device="cuda").weight
+    target = (torch.rand(tokens, device="cuda") * vocabs).long()
     return input, weight, target
 
 
 class BaselineSoftmax(nn.Module):
     """ Baseline softmax that does an output projection and a softmax. """
 
-    def __init__(self, proj_weight: torch.Tensor):
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0):  # k is ignored.
         super().__init__()
         in_dim, out_dim = proj_weight.shape
-        self.fc = nn.Linear(in_dim, out_dim, bias=False)
+        self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda")
+        self.fc.weight = proj_weight
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
@@ -51,10 +52,11 @@ class TopKSoftmax(nn.Module):
               views of the FC output.
     """
 
-    def __init__(self, proj_weight: torch.Tensor, k: int):
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int):
         super().__init__()
         in_dim, out_dim = proj_weight.shape
-        self.fc = nn.Linear(in_dim, out_dim, bias=False)
+        self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda")
+        self.fc.weight = proj_weight
         self.k = k
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
@@ -69,7 +71,7 @@ class TopKSoftmax(nn.Module):
         # Add in the targets.
         I = torch.cat([I, target.reshape(-1, 1)], dim=1)
         # Generate a mask.
-        mask = torch.ones(x.shape) * float("-inf")
+        mask = torch.ones_like(x) * float("-inf")
         mask.scatter_(1, I, 0.0)
         # Mask x and softmax it.
         x = x + mask
@@ -84,16 +86,16 @@ class TopKSoftmaxFaiss(nn.Module):
         [tokens, vocabs] shape. Instead, it is in the shape of [k+1, vocabs].
     """
 
-    def __init__(self, proj_weight: torch.Tensor, k: int):
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int):
         super().__init__()
         self.k = k
         self.res = faiss.StandardGpuResources()
         self.res.setTempMemory(1024 * 1024 * 100)
-        self.b = proj_weight
+        self.b = proj_weight.data
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
         input, target = input
-        D, I = faiss.knn_gpu(self.res, input, self.b.T, self.k)
+        D, I = faiss.knn_gpu(self.res, input, self.b, self.k)
         # TODO: add in target
         return D
