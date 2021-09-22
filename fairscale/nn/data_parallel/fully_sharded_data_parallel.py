@@ -274,9 +274,7 @@ class FullyShardedDataParallel(nn.Module):
         self.move_params_to_cpu = move_params_to_cpu or cpu_offload
         self.compute_dtype = compute_dtype or (torch.float16 if mixed_precision else torch.float32)
         self.buffer_dtype = buffer_dtype or self.compute_dtype
-        # self.move_grads_to_cpu = self.move_params_to_cpu if move_grads_to_cpu is None else move_grads_to_cpu
-        # TODO(anj): This needs to depend on the value of ssd_offload
-        self.move_grads_to_cpu = True  # Since we are testing SSD offload
+        self.move_grads_to_cpu = self.move_params_to_cpu if move_grads_to_cpu is None else move_grads_to_cpu
         self.bucket_cap_mb = bucket_cap_mb
         self.compute_device = compute_device or _get_default_cuda_device(module)
         self.uncollected_opt_state: Dict[int, Dict] = {}
@@ -327,8 +325,8 @@ class FullyShardedDataParallel(nn.Module):
         if self.ssd_offload:
             self.ssd_buffer_filename = f"{randint(1, int(10E6))}_rank{self.rank}"
             self.buffer_tensor = torch.empty((self.buffer_size,))
-            print(f"buffer_size {self.buffer_size}")
             self.ssd_buffer = ssd_offload.SsdBuffer(self.buffer_tensor, self.ssd_buffer_filename)
+            self.move_grads_to_cpu = True
 
         # For now, it is either all flatten or none flatten. This will be extended to
         # multiple flatten groups in my next PR.
@@ -710,12 +708,6 @@ class FullyShardedDataParallel(nn.Module):
         part of the model. This call cannot be made when ssd_offload is set because
         parameter data will not be loaded.
         """
-        # if self.ssd_offload and self.training_state:
-        #     raise RuntimeError(
-        #         "FSDP model doesn't support calling parameters() when "
-        #         + "ssd_offload is true. This is because the parameters returned will not "
-        #         + "contain tensor data since it is offloaded to disk."
-        #     )
         if self.ssd_offload and self.ssd_buffer.buffer is None:
             self.buffer_tensor = torch.empty((self.buffer_size,))
             self.ssd_buffer.from_disk(self.buffer_tensor)
@@ -745,14 +737,6 @@ class FullyShardedDataParallel(nn.Module):
         If you want the full param to be returned, you should call this function
         under a `summon_full_params` context when using flattened or original params.
         """
-
-        # if self.ssd_offload and self.training_state is not None:
-        #     raise RuntimeError(
-        #         "FSDP model doesn't support calling named_parameters() when "
-        #         + "ssd_offload is true. This is because the parameters returned will not "
-        #         + "contain tensor data since it is offloaded to disk."
-        #     )
-
         if self.ssd_offload and self.ssd_buffer.buffer is None:
             self.buffer_tensor = torch.empty((self.buffer_size,))
             self.ssd_buffer.from_disk(self.buffer_tensor)
@@ -858,8 +842,7 @@ class FullyShardedDataParallel(nn.Module):
                 self.ssd_buffer.from_disk(self.buffer_tensor)
 
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                p._fp32_shard = handle.get_tensor()
-                p.data = p._fp32_shard
+                p.data = handle.get_tensor()
 
         try:
             yield
@@ -1245,8 +1228,6 @@ class FullyShardedDataParallel(nn.Module):
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
                 # TODO(anj): We need another function that enables us to drop the current
                 # tensors and not have to write to disk in the case of eval.
-                p._fp32_shard = torch.zeros_like(p._fp32_shard, device=torch.device("cpu"), dtype=p._fp32_shard.dtype)
-                free_storage_(p._fp32_shard)
                 p.data = handle
 
         # Switch to main FP32 param shard. We maintain this invariant throughout
@@ -1439,15 +1420,12 @@ class FullyShardedDataParallel(nn.Module):
         self._use_fp32_param_shard([param])
 
         if not self._require_backward_grad_sync:
-            # we still need to update the params
-            self.ssd_buffer.to_disk()
-            # Free storage of the fp32 shard
-            for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                # TODO(anj): We need another function that enables us to drop the current
-                # tensors and not have to write to disk in the case of eval.
-                p._fp32_shard = torch.zeros_like(p._fp32_shard, device=torch.device("cpu"), dtype=p._fp32_shard.dtype)
-                free_storage_(p._fp32_shard)
-                p = handle
+            if self.ssd_offload:
+                # we still need to update the params
+                self.ssd_buffer.to_disk()
+                # Free storage of the fp32 shard
+                for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
+                    p = handle
             return
 
         # Wait for all work in the current stream to finish, then start the
@@ -1477,12 +1455,9 @@ class FullyShardedDataParallel(nn.Module):
                 assert self.world_size == 1
                 callback_fn(param.grad.data)
 
-            for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                # TODO(anj): We need another function that enables us to drop the current
-                # tensors and not have to write to disk in the case of eval.
-                p._fp32_shard = torch.zeros_like(p._fp32_shard, device=torch.device("cpu"), dtype=p._fp32_shard.dtype)
-                free_storage_(p._fp32_shard)
-                p = handle
+            if self.ssd_offload:
+                for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
+                    p = handle
 
             # After _post_backward_hook returns, orig_grad_data will eventually
             # go out of scope, at which point it could otherwise be freed for
@@ -1654,7 +1629,7 @@ class FullyShardedDataParallel(nn.Module):
             # The params are on disk and need to be moved to the CPU.
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
                 p._fp32_shard = handle.get_tensor().view(p._shard_size)
-                # TODO(anjs): make this simiar to mixed precision
+                # TODO(anjs): make this similar to mixed precision
                 p._fp32_shard = p._fp32_shard.cuda()
                 p.data = p._fp32_shard
 
