@@ -224,11 +224,11 @@ class TestSsdLoading(DistributedTest):
         # test_fn = functools.partial(self._test_ssd_offload_train)
         # spawn_and_init(test_fn)
         import tempfile
+
         test_fn = functools.partial(self._test_ssd_offload_train)
         dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
         group = torch.distributed.new_group()
         test_fn(0, group)
-
 
     def test_ssd_offloading_train_simple(self):
         test_fn = functools.partial(self._test_ssd_offload_train_simple)
@@ -319,24 +319,26 @@ class TestSsdLoading(DistributedTest):
         if not config["ssd_offload"]:
             model = model.cuda()
         model_device = torch.device("cuda")
-        print(f"model.parameters {[type(p.data) for p in model.parameters()]}")
-        optim = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+        optim = torch.optim.SGD(model.ssd_buffer.get_tensors(), lr=0.01, momentum=0.9)
         optim.zero_grad()
         # Inputs always cuda regardless of move_grads_cpu, or model.device
         input = model.get_input(torch.device("cuda"))
         output = model(*input)
         loss = model.module.get_loss(input, output).to(model_device)
-        print(f"loss.requires_grad {loss} {loss.requires_grad}")
-
         assert loss.dtype == torch.float32
         model.module.run_backward(loss)
-        optim.step()
-        # if isinstance(model, FullyShardedDataParallel):
-        #     model.assert_state(TrainingState.IDLE)
+        params = [p for p in model.parameters()]
+        for handle, param in zip(model.ssd_buffer.get_tensors(), params):
+            handle.grad = param.grad
+            handle.requires_grad = param.requires_grad
 
-        # fileList = glob.glob(os.getcwd() + "/*_rank*")
-        # for file in fileList:
-        #     rmf(file)
+        optim.step()
+        if isinstance(model, FullyShardedDataParallel):
+            model.assert_state(TrainingState.IDLE)
+
+        fileList = glob.glob(os.getcwd() + "/*_rank*")
+        for file in fileList:
+            rmf(file)
 
 
 class TransformerWithSharedParams(nn.Module):

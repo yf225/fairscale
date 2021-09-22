@@ -145,9 +145,6 @@ class SsdTensorHandle(torch.Tensor):
     def __new__(
         cls: SsdTensorHandle, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = False
     ) -> SsdTensorHandle:
-        # TODO: PJ/AS Pass in proper shape of tensor to ._make_subclass so that backward calculates gradients properly
-        # r = torch.Tensor._make_subclass(cls, torch.empty(()), requires_grad)
-        # return r
         r = torch.Tensor._make_subclass(cls, torch.empty(shape, dtype=dtype), requires_grad)
         return r
 
@@ -175,6 +172,7 @@ class SsdTensorHandle(torch.Tensor):
 
     @classmethod
     def from_tensor(cls, tensor: torch.Tensor) -> SsdTensorHandle:
+        # TODO(anj): figure out why requires_grad property does not flow.
         handle = cls(shape=tensor.shape, dtype=tensor.dtype, requires_grad=tensor.requires_grad)
         handle.tensor = tensor
         return handle

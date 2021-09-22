@@ -275,7 +275,8 @@ class FullyShardedDataParallel(nn.Module):
         self.compute_dtype = compute_dtype or (torch.float16 if mixed_precision else torch.float32)
         self.buffer_dtype = buffer_dtype or self.compute_dtype
         # self.move_grads_to_cpu = self.move_params_to_cpu if move_grads_to_cpu is None else move_grads_to_cpu
-        self.move_grads_to_cpu = True # Since we are testing SSD offload
+        # TODO(anj): This needs to depend on the value of ssd_offload
+        self.move_grads_to_cpu = True  # Since we are testing SSD offload
         self.bucket_cap_mb = bucket_cap_mb
         self.compute_device = compute_device or _get_default_cuda_device(module)
         self.uncollected_opt_state: Dict[int, Dict] = {}
@@ -603,7 +604,7 @@ class FullyShardedDataParallel(nn.Module):
                 self.numel_padded_per_param.append(0)
                 if self.ssd_offload:
                     p._shard_size = p.data.size()  # type: ignore
-                    self.ssd_buffer.insert(p.data)
+                    p._handle = self.ssd_buffer.insert(p.data)
                     free_storage_(p.data)
                 continue
             p._is_sharded = True
@@ -613,7 +614,7 @@ class FullyShardedDataParallel(nn.Module):
                 orig_data = p.data
                 p.data, num_padded = self._get_shard(p.data)
                 p._shard_size = p.size()  # type: ignore
-                self.ssd_buffer.insert(p.data)
+                p._handle = self.ssd_buffer.insert(p.data)
                 free_storage_(p.data)
                 self.numel_padded_per_param.append(num_padded)
                 free_storage_(orig_data)
@@ -718,7 +719,7 @@ class FullyShardedDataParallel(nn.Module):
         if self.ssd_offload and self.ssd_buffer.buffer is None:
             self.buffer_tensor = torch.empty((self.buffer_size,))
             self.ssd_buffer.from_disk(self.buffer_tensor)
-        
+
         return super().parameters(recurse=recurse)
 
     @contextlib.contextmanager
@@ -1438,6 +1439,15 @@ class FullyShardedDataParallel(nn.Module):
         self._use_fp32_param_shard([param])
 
         if not self._require_backward_grad_sync:
+            # we still need to update the params
+            self.ssd_buffer.to_disk()
+            # Free storage of the fp32 shard
+            for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
+                # TODO(anj): We need another function that enables us to drop the current
+                # tensors and not have to write to disk in the case of eval.
+                p._fp32_shard = torch.zeros_like(p._fp32_shard, device=torch.device("cpu"), dtype=p._fp32_shard.dtype)
+                free_storage_(p._fp32_shard)
+                p = handle
             return
 
         # Wait for all work in the current stream to finish, then start the
@@ -1466,6 +1476,13 @@ class FullyShardedDataParallel(nn.Module):
                 # case grads should be all-reduced here.
                 assert self.world_size == 1
                 callback_fn(param.grad.data)
+
+            for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
+                # TODO(anj): We need another function that enables us to drop the current
+                # tensors and not have to write to disk in the case of eval.
+                p._fp32_shard = torch.zeros_like(p._fp32_shard, device=torch.device("cpu"), dtype=p._fp32_shard.dtype)
+                free_storage_(p._fp32_shard)
+                p = handle
 
             # After _post_backward_hook returns, orig_grad_data will eventually
             # go out of scope, at which point it could otherwise be freed for
