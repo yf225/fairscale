@@ -4,29 +4,41 @@
 # LICENSE file in the root directory of this source tree.
 
 
-from typing import Any
+from typing import Any, Tuple
 
 import faiss
 import faiss.contrib.torch_utils  # noqa: F401, actually used just by importing
 import torch
 from torch import nn
+import torch.nn.functional as F
 
-#  res = faiss.StandardGpuResources()
-#  res.setTempMemory(1024*1024*100)
-#  D, I = faiss.knn_gpu(res, q, b.T, 2)
+
+def get_data(shape: Tuple[Tuple[int, int], Tuple[int, int]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """ Utility function for getting some tensors for testing and benchmarking."""
+    (tokens, d1), (d2, vocabs) = shape
+    assert d1 == d2
+    input = torch.rand(tokens, d1)
+    weight = torch.rand(d2, vocabs)
+    target = (torch.rand(tokens) * vocabs).long()
+    return input, weight, target
 
 
 class BaselineSoftmax(nn.Module):
     """ Baseline softmax that does an output projection and a softmax. """
 
-    def __init__(self, proj_weight: torch.Tensor, log_prob: bool):
+    def __init__(self, proj_weight: torch.Tensor):
         super().__init__()
-        # todo
+        in_dim, out_dim = proj_weight.shape
+        self.fc = nn.Linear(in_dim, out_dim, bias=False)
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
         input, target = input
-        return input, target
+        assert isinstance(input, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        x = self.fc(input)
+        x = F.softmax(x, dim=-1)
+        return x
 
 
 class TopKSoftmax(nn.Module):
@@ -36,13 +48,52 @@ class TopKSoftmax(nn.Module):
         top-K is applied.
 
         TODO: can also implement a variant that does reduce GPU memory by tiled
-              views of the output.
+              views of the FC output.
     """
 
-    pass
+    def __init__(self, proj_weight: torch.Tensor, k: int):
+        super().__init__()
+        in_dim, out_dim = proj_weight.shape
+        self.fc = nn.Linear(in_dim, out_dim, bias=False)
+        self.k = k
+
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        assert kwargs == {}
+        input, target = input
+        assert isinstance(input, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        # Get matmul output.
+        x = self.fc(input)
+        # Get the top-K index.
+        D, I = torch.topk(x, self.k)
+        # Add in the targets.
+        I = torch.cat([I, target.reshape(-1, 1)], dim=1)
+        # Generate a mask.
+        mask = torch.ones(x.shape) * float("-inf")
+        mask.scatter_(1, I, 0.0)
+        # Mask x and softmax it.
+        x = x + mask
+        x = F.softmax(x, dim=-1)
+        return x
 
 
 class TopKSoftmaxFaiss(nn.Module):
-    """ TopK softmax that uses FAISS's fused project & top-K to reduce GPU memory. """
+    """ TopK softmax that uses FAISS's fused project & top-K to reduce GPU memory.
 
-    pass
+        Note, the output of this kernel is reduced in size. It is no longer the
+        [tokens, vocabs] shape. Instead, it is in the shape of [k+1, vocabs].
+    """
+
+    def __init__(self, proj_weight: torch.Tensor, k: int):
+        super().__init__()
+        self.k = k
+        self.res = faiss.StandardGpuResources()
+        self.res.setTempMemory(1024 * 1024 * 100)
+        self.b = proj_weight
+
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        assert kwargs == {}
+        input, target = input
+        D, I = faiss.knn_gpu(self.res, input, self.b.T, self.k)
+        # TODO: add in target
+        return D
