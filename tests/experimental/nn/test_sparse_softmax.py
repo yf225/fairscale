@@ -100,11 +100,11 @@ def test_topk_tiled(input_data):
     input, weight, target = input_data
     weight.grad = None
     sm = TopKTiledSoftmax(weight, k=2, tile_factor=2)
-    out, idx = sm(input, target)
-    assert out.shape == (2, 2)
+    out = sm(input, target)
     print(out)
-    # XXX: need to change target and compute the loss
-    out.mean().backward()
+    assert out.shape == (2, 4)
+    loss = nn.CrossEntropyLoss()
+    loss(out, target).backward()
     print(weight.grad)
 
 

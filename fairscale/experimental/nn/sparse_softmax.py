@@ -149,23 +149,24 @@ class TopKTiledSoftmax(nn.Module):
     def __init__(self, proj_weight: torch.nn.Parameter, k: int, tile_factor: int = 16):
         super().__init__()
         out_dim, in_dim = proj_weight.shape
+        self.vocabs = out_dim
         self.fcs = []
         for w in torch.split(proj_weight, out_dim // tile_factor, 0):
             self.fcs.append(nn.Linear(in_dim, w.shape[0], bias=False, device="cuda"))
             delattr(self.fcs[-1], "weight")
             self.fcs[-1].weight = w  # type: ignore
         self.k = k
-        self.tile_factor = tile_factor
+        self.weight = proj_weight.T
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
         input, target = input
         assert isinstance(input, torch.Tensor)
         assert isinstance(target, torch.Tensor)
+        tokens, _ = input.shape
         val = []
         idx = []
         base = 0
-        input.requires_grad_(True)
         for fc in self.fcs:
             # Get matmul output.
             x = fc(input)
@@ -174,14 +175,26 @@ class TopKTiledSoftmax(nn.Module):
             val.append(D)
             idx.append(I + base)
             base += fc.weight.shape[0]
-        # top-K again, after this only uses 1/10th of memory of untiled case.
+        # Top-K again, after this only uses 1/10th of memory of untiled case.
         val = torch.cat(val, dim=-1)
         idx = torch.cat(idx, dim=-1)
         val, I = torch.topk(val, self.k)
         idx = torch.gather(idx, 1, I)
-        # XXX: no way to add in the targets to val though.
-        idx = torch.cat([idx, target.reshape(-1, 1)], dim=1)
-        return F.softmax(val, dim=-1), idx
+        # Make a sparse tensor.
+        j = torch.arange(idx.shape[0], device=idx.device).expand(idx.shape[1], idx.shape[0]).T
+        idx = torch.cat([j.reshape(1, -1), idx.reshape(1, -1)])
+        result = torch.sparse_coo_tensor(idx, val.reshape(-1), (tokens, self.vocabs))
+
+        # Add in the targets to top-K results.
+        w = torch.gather(self.weight, 1, target.expand(self.weight.shape[0], target.shape[0]))
+        val = (input * w.T).sum(dim=1)
+        j = torch.arange(target.shape[0], device=target.device).expand(1, target.shape[0]).T
+        idx = torch.cat([j.reshape(1, -1), target.reshape(1, -1)])
+        result_target = torch.sparse_coo_tensor(idx, val.reshape(-1), (tokens, self.vocabs))
+        result += result_target
+
+        # Softmax (assuming fill value is -inf) and return the dense result
+        return torch.sparse.softmax(result, dim=1).to_dense()
 
 
 _res = None
