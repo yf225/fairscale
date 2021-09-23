@@ -236,7 +236,6 @@ class SsdTensorHandle(torch.Tensor):
         ssd_tensor_handles = []
 
         def unwrap(e):
-            print(f"e {e}")
             if isinstance(e, SsdTensorHandle):
                 t = e.to_tensor()
                 ssd_tensor_handles.append((e, t._version))
@@ -339,6 +338,43 @@ class TorchSaver:
             obj, f, self.pickle_module, pickle_protocol=pickle_protocol, _use_new_zipfile_serialization=False
         )
 
+class SsdParameter(torch.nn.Parameter, SsdTensorHandle):
+    @staticmethod
+    def __new__(
+        cls: SsdParameter, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = False
+    ) -> SsdParameter:
+        r = SsdTensorHandle._make_subclass(cls, torch.empty(shape, dtype=dtype), requires_grad)
+        
+        return r
+    
+    def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool) -> None:
+        super(SsdParameter, self).__init__(shape, dtype, requires_grad)
+
+    __torch_function__ = torch._C._disabled_torch_function_impl
+
+    @classmethod
+    def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
+        ssd_tensor_handles = []
+
+        def unwrap(e):
+            if isinstance(e, SsdParameter):
+                t = e.to_tensor()
+                ssd_tensor_handles.append((e, t._version))
+                return t
+            else:
+                return e
+
+        # need to test if tensor is modified
+        r = func(*tree_map(unwrap, args), **tree_map(unwrap, kwargs))
+
+        for e, saved_version in ssd_tensor_handles:
+            # TODO: version counter trick doesn't work
+            """
+            if saved_version != e.tensor._version:
+                r.to_file()
+            """
+            e.to_file()
+        return r
 
 class DisableMemoizationPicklerModule:
     @classmethod

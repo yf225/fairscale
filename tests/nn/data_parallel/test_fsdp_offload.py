@@ -20,6 +20,8 @@ from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 from fairscale.nn.data_parallel import FullyShardedDataParallel, TrainingState
 from fairscale.utils import torch_version
 from fairscale.utils.testing import dist_init, rmf, spawn_for_all_world_sizes
+import tempfile
+import fairscale.experimental.nn.ssd_offload as so
 
 # How to use remote-pdb: https://gist.github.com/sshleifer/9d43351957179c13606e015b072927d4
 # All helper functions called by spawn must be either @classmethod, @staticmethod
@@ -220,6 +222,17 @@ class SimpleLinear(nn.Module):
 
 
 class TestSsdLoading(DistributedTest):
+
+    def test_ssd_offloading_param(self):
+        # test_fn = functools.partial(self._test_ssd_offload_train)
+        # spawn_and_init(test_fn)
+        import tempfile
+
+        test_fn = functools.partial(self._test_ssd_param)
+        dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
+        group = torch.distributed.new_group()
+        test_fn(0, group)
+
     def test_ssd_offloading_train(self):
         # test_fn = functools.partial(self._test_ssd_offload_train)
         # spawn_and_init(test_fn)
@@ -243,6 +256,30 @@ class TestSsdLoading(DistributedTest):
     def test_transformer_parameterized(self, config):
         # Test every combination of these options:
         spawn_and_init(functools.partial(self._test_identical_outputs, TransformerWithSharedParams, config))
+
+    @classmethod
+    def _test_ssd_param(self, rank, group):
+        with tempfile.NamedTemporaryFile() as f:
+            orig_tensor = torch.randn((4, 4), requires_grad=True)
+            print(f"orig_tensor {orig_tensor}")
+
+            param = so.SsdParameter(orig_tensor.shape, orig_tensor.dtype, True)
+            param.point_to_tensor(orig_tensor)
+            param.set_file_params(f.name, 0)
+            param.to_file(release_tensor_after_write=True)
+
+            optimizer_ssd = torch.optim.SGD([param], lr=0.1)
+
+            y1 = param + 3
+            # print(f"param {param.to_tensor()}")
+            print(f"y1 {y1}")
+            optimizer_ssd.zero_grad()
+            print(f"param {type(param)}")
+            y1.sum().backward()
+            print(f"param.grad {param.grad}")
+            optimizer_ssd.step()
+            print(f"param {param.to_tensor()}")
+
 
     @classmethod
     def _test_ssd_offload_eval(self, rank, group, config):
@@ -274,9 +311,6 @@ class TestSsdLoading(DistributedTest):
 
     @classmethod
     def _test_ssd_offload_train_simple(self, rank, group):
-        import tempfile
-
-        import fairscale.experimental.nn.ssd_offload as so
 
         with tempfile.NamedTemporaryFile() as f:
             orig_tensor = torch.randn((4, 4), requires_grad=True)
