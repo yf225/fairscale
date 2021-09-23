@@ -34,12 +34,16 @@ def test_dense(input_data, kernel):
     weight.grad = None
 
     if kernel is TiledSoftmax:
-        sm = kernel(weight, tile_factor=2)
+        tile_factor = 2
+        sm = kernel(weight, tile_factor=tile_factor)
     else:
         sm = kernel(weight)
 
     # Forward
     out = sm(input, target)
+    if kernel is TiledSoftmax:
+        orig_out = out
+        out = torch.cat(out, dim=0)
 
     # Check
     assert out.shape == (2, 4)
@@ -54,7 +58,13 @@ def test_dense(input_data, kernel):
         # Inplace can't do autograd
         return
     loss = nn.CrossEntropyLoss()
-    loss(out, target).backward()
+    if kernel is TiledSoftmax:
+        out = orig_out
+        out = [loss(o, t).unsqueeze(dim=0) for o, t in zip(out, torch.split(target, target.shape[0] // tile_factor, 0))]
+        out = torch.cat(out, dim=0)
+        out.mean().backward()
+    else:
+        loss(out, target).backward()
 
     # Check
     global _dense_grad

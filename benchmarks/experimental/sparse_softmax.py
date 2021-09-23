@@ -10,7 +10,7 @@ import time
 import torch
 from torch.cuda import Event
 
-from fairscale.experimental.nn import BaselineSoftmax, TopKSoftmax, TopKSoftmaxFaiss
+from fairscale.experimental.nn import BaselineSoftmax, InplaceSoftmax, TiledSoftmax, TopKSoftmax, TopKSoftmaxFaiss
 from fairscale.experimental.nn.sparse_softmax import get_data
 from fairscale.utils.testing import get_smi_memory
 
@@ -23,7 +23,7 @@ SHAPES = [
     ("1k_128h_256k", (1024, 128), (128, 256 * 1024)),
     ("4k_128h_256k", (4096, 128), (128, 256 * 1024)),
 ]
-KERNELS = [BaselineSoftmax, TopKSoftmax, TopKSoftmaxFaiss]
+KERNELS = [BaselineSoftmax, InplaceSoftmax, TiledSoftmax, TopKSoftmax, TopKSoftmaxFaiss]
 
 
 def run_on_gpu(kernel, data, repeats, no_grad):

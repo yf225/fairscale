@@ -43,7 +43,10 @@ class BaselineSoftmax(nn.Module):
 
 
 class InplaceSoftmax(nn.Module):
-    """ Inplace softmax that saves half of the memory. """
+    """ Inplace softmax that saves half of the memory but
+        this does NOT work with autograd, which means it can't
+        be used in training.
+    """
 
     def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0):  # k is ignored.
         super().__init__()
@@ -68,6 +71,14 @@ class TiledSoftmax(nn.Module):
 
         This should be use a little over half of the memory of the BaselineSoftmax above,
         depending on the tile_factor argument.
+
+        Peak memory is saved only when torch.no_grad is used. Which means this
+        needs activation checkpointing during training.
+
+        It is likely *NOT* useful since softmax is at the end of the
+        forward pass and even after checkpointing, immediately, backward
+        pass will trigger a mini-forward pass that with torch.grad(), which
+        will again consume lots of memory.
     """
 
     def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 16):  # k is ignored
@@ -88,7 +99,8 @@ class TiledSoftmax(nn.Module):
             x = self.fc(i)
             x = F.softmax(x, dim=-1)
             out.append(x)
-        return torch.cat(out, dim=0)
+        # Do not use torch.cat(out, dim=0), which would double the memory.
+        return out
 
 
 class TopKSoftmax(nn.Module):
