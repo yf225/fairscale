@@ -11,7 +11,14 @@ import pytest
 import torch
 from torch import nn
 
-from fairscale.experimental.nn import BaselineSoftmax, InplaceSoftmax, TiledSoftmax, TopKSoftmax, TopKSoftmaxFaiss
+from fairscale.experimental.nn import (
+    BaselineSoftmax,
+    InplaceSoftmax,
+    TiledSoftmax,
+    TopKFaissSoftmax,
+    TopKSoftmax,
+    TopKTiledSoftmax,
+)
 from fairscale.experimental.nn.sparse_softmax import get_data
 from fairscale.utils.testing import skip_if_no_cuda
 
@@ -50,6 +57,7 @@ def test_dense(input_data, kernel):
     global _dense_out
     if _dense_out is None:
         _dense_out = out
+        print(out)
     else:
         torch.allclose(_dense_out, out)
 
@@ -70,6 +78,7 @@ def test_dense(input_data, kernel):
     global _dense_grad
     if _dense_grad is None:
         _dense_grad = weight.grad
+        print(weight.grad)
     else:
         torch.allclose(_dense_grad, weight.grad)
 
@@ -80,11 +89,28 @@ def test_topk(input_data):
     sm = TopKSoftmax(weight, k=2)
     out = sm(input, target)
     assert out.shape == (2, 4)
+    print(out)
+    loss = nn.CrossEntropyLoss()
+    loss(out, target).backward()
+    print(weight.grad)
+
+
+@skip_if_no_cuda
+def test_topk_tiled(input_data):
+    input, weight, target = input_data
+    weight.grad = None
+    sm = TopKTiledSoftmax(weight, k=2, tile_factor=2)
+    out, idx = sm(input, target)
+    assert out.shape == (2, 2)
+    print(out)
+    # XXX: need to change target and compute the loss
+    out.mean().backward()
+    print(weight.grad)
 
 
 @skip_if_no_cuda
 def test_topk_faiss(input_data):
     input, weight, target = input_data
-    sm = TopKSoftmaxFaiss(weight, k=2)
+    sm = TopKFaissSoftmax(weight, k=2)
     out = sm(input, target)
     assert out.shape == (2, 2)

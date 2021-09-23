@@ -70,7 +70,8 @@ class TiledSoftmax(nn.Module):
     """ Memory saving softmax that does the softmax in a tiled fashion.
 
         This should be use a little over half of the memory of the BaselineSoftmax above,
-        depending on the tile_factor argument.
+        depending on the tile_factor argument. The tiling is done on the `tokens` dimension
+        of the input tensor.
 
         Peak memory is saved only when torch.no_grad is used. Which means this
         needs activation checkpointing during training.
@@ -104,13 +105,11 @@ class TiledSoftmax(nn.Module):
 
 
 class TopKSoftmax(nn.Module):
-    """ TopK softmax that does an project and take the top-K and then softmax.
+    """ TopK softmax that does a projection and take the top-K and then softmax.
 
-        Peak GPU memory is not reduced since entire output is generated and then
-        top-K is applied.
-
-        TODO: can also implement a variant that does reduce GPU memory by tiled
-              views of the FC output.
+        Peak GPU memory is not reduced and actually increased since
+        we need to add in the target and generate a mask and return a full
+        output after softmax.
     """
 
     def __init__(self, proj_weight: torch.nn.Parameter, k: int):
@@ -129,9 +128,9 @@ class TopKSoftmax(nn.Module):
         x = self.fc(input)
         # Get the top-K index.
         D, I = torch.topk(x, self.k)
-        # Add in the targets.
+        # Add in the targets. (Till here only use 1GB for 1k case)
         I = torch.cat([I, target.reshape(-1, 1)], dim=1)
-        # Generate a mask.
+        # Generate a mask. (The following line triples memory usage.)
         mask = torch.ones_like(x) * float("-inf")
         mask.scatter_(1, I, 0.0)
         # Mask x and softmax it.
@@ -140,10 +139,55 @@ class TopKSoftmax(nn.Module):
         return x
 
 
+class TopKTiledSoftmax(nn.Module):
+    """ TopK softmax that does a projection and take the top-K and then softmax.
+
+        Peak GPU memory is reduced since the computation is done in tiled fashion.
+        The tiling is done on the `out_dim` of the FC weight tensor.
+    """
+
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int, tile_factor: int = 16):
+        super().__init__()
+        out_dim, in_dim = proj_weight.shape
+        self.fcs = []
+        for w in torch.split(proj_weight, out_dim // tile_factor, 0):
+            self.fcs.append(nn.Linear(in_dim, w.shape[0], bias=False, device="cuda"))
+            delattr(self.fcs[-1], "weight")
+            self.fcs[-1].weight = w  # type: ignore
+        self.k = k
+        self.tile_factor = tile_factor
+
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        assert kwargs == {}
+        input, target = input
+        assert isinstance(input, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        val = []
+        idx = []
+        base = 0
+        input.requires_grad_(True)
+        for fc in self.fcs:
+            # Get matmul output.
+            x = fc(input)
+            # Get the top-K value and index.
+            D, I = torch.topk(x, self.k)
+            val.append(D)
+            idx.append(I + base)
+            base += fc.weight.shape[0]
+        # top-K again, after this only uses 1/10th of memory of untiled case.
+        val = torch.cat(val, dim=-1)
+        idx = torch.cat(idx, dim=-1)
+        val, I = torch.topk(val, self.k)
+        idx = torch.gather(idx, 1, I)
+        # XXX: no way to add in the targets to val though.
+        idx = torch.cat([idx, target.reshape(-1, 1)], dim=1)
+        return F.softmax(val, dim=-1), idx
+
+
 _res = None
 
 
-class TopKSoftmaxFaiss(nn.Module):
+class TopKFaissSoftmax(nn.Module):
     """ TopK softmax that uses FAISS's fused project & top-K to reduce GPU memory.
 
         Note, the output of this kernel is reduced in size. It is no longer the
@@ -166,5 +210,5 @@ class TopKSoftmaxFaiss(nn.Module):
         torch.cuda.synchronize()
         # Do the fast top-k.
         D, I = faiss.knn_gpu(_res, input, self.b, self.k)
-        # TODO: add in target
+        # XXX: no way to add in target; need custom backward
         return D

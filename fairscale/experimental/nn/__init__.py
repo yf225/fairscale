@@ -6,7 +6,14 @@
 from typing import List
 
 from .offload import OffloadModel
-from .sparse_softmax import BaselineSoftmax, InplaceSoftmax, TiledSoftmax, TopKSoftmax, TopKSoftmaxFaiss
+from .sparse_softmax import (
+    BaselineSoftmax,
+    InplaceSoftmax,
+    TiledSoftmax,
+    TopKFaissSoftmax,
+    TopKSoftmax,
+    TopKTiledSoftmax,
+)
 from .sync_batchnorm import SyncBatchNorm
 
 __all__: List[str] = []
