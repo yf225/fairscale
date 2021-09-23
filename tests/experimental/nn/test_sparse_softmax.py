@@ -7,33 +7,74 @@
 # pylint: disable=missing-class-docstring
 # pylint: disable=missing-function-docstring
 
-from fairscale.experimental.nn import BaselineSoftmax, TopKSoftmax, TopKSoftmaxFaiss
+import pytest
+import torch
+from torch import nn
+
+from fairscale.experimental.nn import BaselineSoftmax, InplaceSoftmax, TiledSoftmax, TopKSoftmax, TopKSoftmaxFaiss
 from fairscale.experimental.nn.sparse_softmax import get_data
 from fairscale.utils.testing import skip_if_no_cuda
 
 
-@skip_if_no_cuda
-def test_baseline():
+@pytest.fixture(scope="session")
+def input_data():
     shape = ((2, 3), (3, 4))
-    input, weight, target = get_data(shape)
-    sm = BaselineSoftmax(weight)
+    return get_data(shape)
+
+
+_dense_out = None
+_dense_grad = None
+
+
+@skip_if_no_cuda
+@pytest.mark.parametrize("kernel", [BaselineSoftmax, InplaceSoftmax, TiledSoftmax])
+def test_dense(input_data, kernel):
+    # Prepare
+    input, weight, target = input_data
+    weight.grad = None
+
+    if kernel is TiledSoftmax:
+        sm = kernel(weight, tile_factor=2)
+    else:
+        sm = kernel(weight)
+
+    # Forward
     out = sm(input, target)
+
+    # Check
     assert out.shape == (2, 4)
+    global _dense_out
+    if _dense_out is None:
+        _dense_out = out
+    else:
+        torch.allclose(_dense_out, out)
+
+    # Backward
+    if kernel is InplaceSoftmax:
+        # Inplace can't do autograd
+        return
+    loss = nn.CrossEntropyLoss()
+    loss(out, target).backward()
+
+    # Check
+    global _dense_grad
+    if _dense_grad is None:
+        _dense_grad = weight.grad
+    else:
+        torch.allclose(_dense_grad, weight.grad)
 
 
 @skip_if_no_cuda
-def test_topk():
-    shape = ((2, 3), (3, 4))
-    input, weight, target = get_data(shape)
+def test_topk(input_data):
+    input, weight, target = input_data
     sm = TopKSoftmax(weight, k=2)
     out = sm(input, target)
     assert out.shape == (2, 4)
 
 
 @skip_if_no_cuda
-def test_topk_faiss():
-    shape = ((2, 3), (3, 4))
-    input, weight, target = get_data(shape)
+def test_topk_faiss(input_data):
+    input, weight, target = input_data
     sm = TopKSoftmaxFaiss(weight, k=2)
     out = sm(input, target)
     assert out.shape == (2, 2)

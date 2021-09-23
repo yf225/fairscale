@@ -28,7 +28,7 @@ class BaselineSoftmax(nn.Module):
 
     def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0):  # k is ignored.
         super().__init__()
-        in_dim, out_dim = proj_weight.shape
+        out_dim, in_dim = proj_weight.shape
         self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda")
         self.fc.weight = proj_weight
 
@@ -40,6 +40,55 @@ class BaselineSoftmax(nn.Module):
         x = self.fc(input)
         x = F.softmax(x, dim=-1)
         return x
+
+
+class InplaceSoftmax(nn.Module):
+    """ Inplace softmax that saves half of the memory. """
+
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0):  # k is ignored.
+        super().__init__()
+        out_dim, in_dim = proj_weight.shape
+        self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda")
+        self.fc.weight = proj_weight
+
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        assert kwargs == {}
+        input, target = input
+        assert isinstance(input, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        x = self.fc(input)
+        x.exp_()
+        x_sum = torch.sum(x, dim=-1, keepdim=True)
+        x /= x_sum
+        return x
+
+
+class TiledSoftmax(nn.Module):
+    """ Memory saving softmax that does the softmax in a tiled fashion.
+
+        This should be use a little over half of the memory of the BaselineSoftmax above,
+        depending on the tile_factor argument.
+    """
+
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 16):  # k is ignored
+        super().__init__()
+        out_dim, in_dim = proj_weight.shape
+        self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda")
+        self.fc.weight = proj_weight
+        self.tile_factor = tile_factor
+
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        assert kwargs == {}
+        input, target = input
+        assert isinstance(input, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        tokens, _ = input.shape
+        out = []
+        for i in torch.split(input, tokens // self.tile_factor, 0):
+            x = self.fc(i)
+            x = F.softmax(x, dim=-1)
+            out.append(x)
+        return torch.cat(out, dim=0)
 
 
 class TopKSoftmax(nn.Module):
@@ -54,7 +103,7 @@ class TopKSoftmax(nn.Module):
 
     def __init__(self, proj_weight: torch.nn.Parameter, k: int):
         super().__init__()
-        in_dim, out_dim = proj_weight.shape
+        out_dim, in_dim = proj_weight.shape
         self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda")
         self.fc.weight = proj_weight
         self.k = k
@@ -101,6 +150,9 @@ class TopKSoftmaxFaiss(nn.Module):
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
         input, target = input
+        # Need to sync the GPU to avoid errors from previous async kernels affecting this call.
+        torch.cuda.synchronize()
+        # Do the fast top-k.
         D, I = faiss.knn_gpu(_res, input, self.b, self.k)
         # TODO: add in target
         return D
