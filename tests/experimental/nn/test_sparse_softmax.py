@@ -18,6 +18,7 @@ from fairscale.experimental.nn import (
     TopKFaissSoftmax,
     TopKSoftmax,
     TopKTiledSoftmax,
+    TritonSoftmax,
 )
 from fairscale.experimental.nn.sparse_softmax import get_data
 from fairscale.utils.testing import skip_if_no_cuda
@@ -34,11 +35,14 @@ _dense_grad = None
 
 
 @skip_if_no_cuda
-@pytest.mark.parametrize("kernel", [BaselineSoftmax, InplaceSoftmax, TiledSoftmax])
+@pytest.mark.parametrize("kernel", [BaselineSoftmax, TritonSoftmax, InplaceSoftmax, TiledSoftmax])
 def test_dense(input_data, kernel):
     # Prepare
     input, weight, target = input_data
     weight.grad = None
+
+    if kernel is TritonSoftmax:
+        pytest.skip("skip TritonSoftmax since it takes too long")
 
     if kernel is TiledSoftmax:
         tile_factor = 2

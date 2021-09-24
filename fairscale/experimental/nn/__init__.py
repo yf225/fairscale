@@ -13,6 +13,7 @@ from .sparse_softmax import (
     TopKFaissSoftmax,
     TopKSoftmax,
     TopKTiledSoftmax,
+    TritonSoftmax,
 )
 from .sync_batchnorm import SyncBatchNorm
 

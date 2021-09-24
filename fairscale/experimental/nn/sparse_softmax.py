@@ -12,6 +12,11 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+try:
+    from xformers.triton.softmax import softmax as triton_softmax
+except ImportError:
+    triton_softmax = None
+
 
 def get_data(shape: Tuple[Tuple[int, int], Tuple[int, int]]) -> Tuple[torch.Tensor, torch.nn.Parameter, torch.Tensor]:
     """ Utility function for getting some tensors for testing and benchmarking."""
@@ -40,6 +45,26 @@ class BaselineSoftmax(nn.Module):
         x = self.fc(input)
         x = F.softmax(x, dim=-1)
         return x
+
+
+class TritonSoftmax(BaselineSoftmax):
+    """ Softmax that uses xformers' softmax. """
+
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0):  # k is ignored.
+        super().__init__(proj_weight)
+        assert triton_softmax is not None, "Need to import xformers"
+
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        assert kwargs == {}
+        input, target = input
+        assert isinstance(input, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        x = self.fc(input)
+        orig_shape = x.shape
+        div = min(orig_shape[0], 128)
+        assert x.shape[0] % div == 0
+        x = triton_softmax(x.reshape(-1, div, x.shape[1]))
+        return x.reshape(orig_shape)
 
 
 class InplaceSoftmax(nn.Module):
