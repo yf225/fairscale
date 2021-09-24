@@ -353,10 +353,10 @@ class FullyShardedDataParallel(nn.Module):
         self._num_flatten_params = len(self._fsdp_wrapped_module.flat_params)
         self._param_name_groups = param_name_groups
 
-        for n, p in self.named_parameters():
-            if not hasattr(p, "_filename"):
-                p._filename = f"{randint(1, int(10E6))}_rank{self.rank}"  # type: ignore
-            p._num_padded = 0  # type: ignore
+        # for n, p in self.named_parameters():
+        #     if not hasattr(p, "_filename"):
+        #         p._filename = f"{randint(1, int(10E6))}_rank{self.rank}"  # type: ignore
+        #     p._num_padded = 0  # type: ignore
 
         # Shard module parameters in place
         self._shard_parameters_()
