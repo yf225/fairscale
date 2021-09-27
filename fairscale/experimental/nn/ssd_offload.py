@@ -145,7 +145,7 @@ class SsdTensorHandle(torch.Tensor):
     def __new__(
         cls: SsdTensorHandle, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = False
     ) -> SsdTensorHandle:
-        r = torch.Tensor._make_subclass(cls, torch.empty(shape, dtype=dtype), requires_grad)
+        r = torch.Tensor._make_subclass(cls, torch.empty(shape, dtype=dtype).to("meta"), requires_grad)
         return r
 
     def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool) -> None:
@@ -190,6 +190,8 @@ class SsdTensorHandle(torch.Tensor):
 
     def point_to_file(self, filename: str, offset: int) -> None:
         self.set_file_params(filename, offset)
+        if torch.distributed.get_rank() == 0:
+            print(f"Release: point_to_file:self.tensor {self.tensor.size()}")
         self.tensor = None
 
     def point_to_tensor(self, tensor: torch.Tensor) -> None:
@@ -260,10 +262,10 @@ class SsdTensorHandle(torch.Tensor):
 # Class supporting a single SSD file backing one or
 # more tensors
 class SsdBuffer:
-    def __init__(self, buffer: torch.Tensor, filename: str) -> None:
+    def __init__(self, num_elems: int, filename: str) -> None:
         # TODO(anj): Modify this to pass the size of the buffer rather
         # than a tensor.
-        self.buffer: Optional[torch.Tensor] = buffer
+        self.buffer: Optional[torch.Tensor] = torch.empty((num_elems,))
         self.filename = filename
         self.offset = 0
         self.tensors: Dict[int, SsdTensorHandle] = {}
@@ -288,7 +290,7 @@ class SsdBuffer:
         tensor = tensor.reshape(-1)
         assert self.buffer.dtype == tensor.dtype
         handle = self.allocate(tensor.numel())
-        handle.get_tensor().data.copy_(tensor.data)
+        handle.get_tensor().copy_(tensor)
         return handle
 
     def can_alloc(self, n: int) -> bool:
@@ -308,14 +310,15 @@ class SsdBuffer:
         for offset, t in self.tensors.items():
             t.point_to_file(self.filename, offset)
 
-        self.buffer = None
+        # TODO(anj-s): This does not GC. 
+        self.buffer = torch.empty((1))
 
-    def from_disk(self, buffer: torch.Tensor) -> None:
-        if buffer.numel() < self.offset:
+    def from_disk(self, num_elems: int) -> None:
+        if num_elems < self.offset:
             raise RuntimeError(
-                f"Attempted to load from file ssdbuffer of size: {self.offset} into a buffer that is of size: {buffer.numel()}"
+                f"Attempted to load from file ssdbuffer of size: {self.offset} into a buffer that is of size: {num_elems}"
             )
-        self.buffer = buffer
+        self.buffer = torch.empty((num_elems,))
         valid_data = self.buffer.narrow(0, 0, self.offset)
         read(valid_data, self.filename)
 

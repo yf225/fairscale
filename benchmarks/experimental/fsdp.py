@@ -464,8 +464,8 @@ class TimeKeeper:
 
     def print_time(self, s: str, wait_time: float = 5.0):
         cur_time = time.time()
-        # print(f"@time: {cur_time - self.start_time:0.2f} {s}")
-        # time.sleep(wait_time)
+        print(f"@time: {cur_time - self.start_time:0.2f} {s}")
+        time.sleep(wait_time)
 
 
 tk = TimeKeeper()
@@ -482,8 +482,6 @@ def rmf(filename: str) -> None:
 def benchmark_simple_linear_model(rank, args):
     set_up(rank)
     
-    
-
     def benchmark_fsdp_ssd_offload():
         result = {}
         SIZE = 8
@@ -501,7 +499,6 @@ def benchmark_simple_linear_model(rank, args):
 
         tk.print_time("CPU_MODEL", 1.0)
         monitor_memory(rank, result, "CPU_MODEL")
-        log_tensors_in_memory("CPU_MODEL")
         
         my_auto_wrap_policy = functools.partial(default_auto_wrap_policy, min_num_params=args.min_wrap_params)
         config = {}
@@ -515,22 +512,20 @@ def benchmark_simple_linear_model(rank, args):
 
         tk.print_time("FSDP_MODEL", 1.0)
         monitor_memory(rank, result, "FSDP_MODEL")
-        log_tensors_in_memory("FSDP_MODEL")
 
         num_steps = args.max_batch
         model.eval()
         # Inputs always cuda regardless of move_grads_cpu, or model.device
         input = model.module.get_input(torch.device("cuda"))
 
-        for i in range(num_steps):
-            output = model(*input)
-
-            tk.print_time(f"eval step: {i}", 1.0)
-            monitor_memory(rank, result, f"eval step: {i}")
+        with torch.no_grad():
+            for i in range(num_steps):
+                output = model(*input)
+                tk.print_time(f"eval step: {i}", 1.0)
+                monitor_memory(rank, result, f"eval step: {i}")
         
         tk.print_time("EVAL_END")
         monitor_memory(rank, result, "EVAL_ENDs")
-        log_tensors_in_memory("EVAL_ENDS")
         return result
 
     def benchmark_fsdp_vanilla():
@@ -561,10 +556,10 @@ def benchmark_simple_linear_model(rank, args):
         # Inputs always cuda regardless of move_grads_cpu, or model.device
         input = model.module.get_input(torch.device("cuda"))
 
-        for i in range(num_steps):
-            output = model(*input)
-
-            monitor_memory(rank, result, f"eval step: {i}")
+        with torch.no_grad():
+            for i in range(num_steps):
+                output = model(*input)
+                monitor_memory(rank, result, f"eval step: {i}")
         
         monitor_memory(rank, result, "EVAL_ENDs")
         return result
@@ -580,7 +575,6 @@ def benchmark_simple_linear_model(rank, args):
     fileList = glob.glob(os.getcwd() + "/*_rank*")
     for file in fileList:
         rmf(file)
-
 
 
 def benchmark_transformer_model(rank, args):

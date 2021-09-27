@@ -87,6 +87,18 @@ class TrainingState(Enum):
     SUMMON_FULL_PARAMS = auto()
 
 
+import gc
+def log_tensors_in_memory(label):
+    gc.collect()
+    if torch.distributed.get_rank() == 0:
+        for obj in gc.get_objects():
+            try:
+                if torch.is_tensor(obj) or (hasattr(obj, "data") and torch.is_tensor(obj.data)):
+                    print(label, type(obj), type(obj).__name__, obj.size(), obj.device, obj.storage().size())
+            except:
+                pass
+
+
 class FullyShardedDataParallel(nn.Module):
     """
     A wrapper for sharding Module parameters across data parallel workers. This
@@ -324,8 +336,8 @@ class FullyShardedDataParallel(nn.Module):
         self.buffer_size = sum(p.numel() for p in params)
         if self.ssd_offload:
             self.ssd_buffer_filename = f"{randint(1, int(10E6))}_rank{self.rank}"
-            self.buffer_tensor = torch.empty((self.buffer_size,))
-            self.ssd_buffer = ssd_offload.SsdBuffer(self.buffer_tensor, self.ssd_buffer_filename)
+            # self.buffer_tensor = torch.empty((self.buffer_size,))
+            self.ssd_buffer = ssd_offload.SsdBuffer(self.buffer_size, self.ssd_buffer_filename)
             self.move_grads_to_cpu = True
 
         # For now, it is either all flatten or none flatten. This will be extended to
@@ -589,6 +601,7 @@ class FullyShardedDataParallel(nn.Module):
         """
         self.numel_padded_per_param = []
         for p in self.params:
+            
             assert not hasattr(p, "_is_sharded")
             assert p.is_floating_point()
             if self.mixed_precision:
@@ -597,7 +610,6 @@ class FullyShardedDataParallel(nn.Module):
             # If world_size is 1, then we all-reduce grads instead of sharding.
             p._is_sharded = self.world_size > 1
             p._orig_size = p.data.size()
-
             if not p._is_sharded:
                 self.numel_padded_per_param.append(0)
                 if self.ssd_offload:
@@ -611,11 +623,12 @@ class FullyShardedDataParallel(nn.Module):
             if self.ssd_offload:
                 orig_data = p.data
                 p.data, num_padded = self._get_shard(p.data)
-                p._shard_size = p.size()  # type: ignore
+                p._shard_size = p.data.size()  # type: ignore
                 p._handle = self.ssd_buffer.insert(p.data)
-                free_storage_(p.data)
+                del orig_data
                 self.numel_padded_per_param.append(num_padded)
-                free_storage_(orig_data)
+                free_storage_(p.data)
+                
             else:
                 orig_data = p.data
                 p.data, num_padded = self._get_shard(p.data)
@@ -709,8 +722,7 @@ class FullyShardedDataParallel(nn.Module):
         parameter data will not be loaded.
         """
         if self.ssd_offload and self.ssd_buffer.buffer is None:
-            self.buffer_tensor = torch.empty((self.buffer_size,))
-            self.ssd_buffer.from_disk(self.buffer_tensor)
+            self.ssd_buffer.from_disk(self.buffer_size)
 
         return super().parameters(recurse=recurse)
 
@@ -738,8 +750,7 @@ class FullyShardedDataParallel(nn.Module):
         under a `summon_full_params` context when using flattened or original params.
         """
         if self.ssd_offload and self.ssd_buffer.buffer is None:
-            self.buffer_tensor = torch.empty((self.buffer_size,))
-            self.ssd_buffer.from_disk(self.buffer_tensor)
+            self.ssd_buffer.from_disk(self.buffer_size)
 
         named_param = super().named_parameters(prefix=prefix, recurse=recurse)
         for name, param in named_param:
@@ -839,7 +850,7 @@ class FullyShardedDataParallel(nn.Module):
 
         if self.ssd_offload:
             if self.ssd_buffer.buffer is None:
-                self.ssd_buffer.from_disk(self.buffer_tensor)
+                self.ssd_buffer.from_disk(self.buffer_size)
 
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
                 p.data = handle.get_tensor()
@@ -1092,14 +1103,9 @@ class FullyShardedDataParallel(nn.Module):
             )
             free_storage_(p._full_param_padded)
 
-        # Free storage attributed to p.data
-        if self.ssd_offload:
-            p._fp32_shard_size = p._fp32_shard.size()  # type: ignore
-            p._fp32_shard = torch.zeros_like(p._fp32_shard, device=torch.device("cpu"), dtype=p._fp32_shard.dtype)
-            free_storage_(p._fp32_shard)
-            p.data = p._fp32_shard
-
-        if self.move_grads_to_cpu:
+        # TODO(anj): Condition this on eval rather than ssd_offload. Short term fix
+        # for seeing memory usage.
+        if self.move_grads_to_cpu and not self.ssd_offload:
             # We can optionally move the grad shard to CPU during the backward
             # pass. In this case, it's important to pre-allocate the CPU grad
             # shard in pinned memory so that we can do a non-blocking transfer.
@@ -1217,7 +1223,7 @@ class FullyShardedDataParallel(nn.Module):
 
         outputs = self.module(*args, **kwargs)
 
-        if self.reshard_after_forward:
+        if self.reshard_after_forward or self.ssd_offload:
             self._free_full_params()
             if self.mixed_precision:
                 self._free_fp16_param_shard()
@@ -1225,10 +1231,14 @@ class FullyShardedDataParallel(nn.Module):
         if self.ssd_offload:
             self.ssd_buffer.to_disk()
             # Free storage of the fp32 shard
-            for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
+            for p in self.params:
                 # TODO(anj): We need another function that enables us to drop the current
                 # tensors and not have to write to disk in the case of eval.
-                p.data = handle
+                if hasattr(p, "_cpu_grad"):
+                    del p._cpu_grad
+                free_storage_(p._fp32_shard)
+                free_storage_(p.data)
+                
 
         # Switch to main FP32 param shard. We maintain this invariant throughout
         # the code, i.e., ``p.data == p._fp32_shard`` after each function. This
@@ -1624,8 +1634,8 @@ class FullyShardedDataParallel(nn.Module):
 
         if self.ssd_offload:
             # TODO(anj): we have a similar check elsewhere. Should we do this automatically?
-            if self.ssd_buffer.buffer is None:
-                self.ssd_buffer.from_disk(self.buffer_tensor)
+            self.ssd_buffer.from_disk(self.buffer_size)
+
             # The params are on disk and need to be moved to the CPU.
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
                 p._fp32_shard = handle.get_tensor().view(p._shard_size)
