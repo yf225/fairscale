@@ -24,14 +24,14 @@ from fairscale.experimental.nn.sparse_softmax import get_data
 from fairscale.utils.testing import skip_if_no_cuda
 
 
-@pytest.fixture(scope="session")
-def input_data():
+@pytest.fixture(scope="session", params=[torch.float16, torch.float32])
+def input_data(request):
     shape = ((2, 3), (3, 4))
-    return get_data(shape)
+    return get_data(shape, dtype=request.param)
 
 
-_dense_out = None
-_dense_grad = None
+_dense_out = {}
+_dense_grad = {}
 
 
 @skip_if_no_cuda
@@ -59,11 +59,11 @@ def test_dense(input_data, kernel):
     # Check
     assert out.shape == (2, 4)
     global _dense_out
-    if _dense_out is None:
-        _dense_out = out
+    if out.dtype not in _dense_out:
+        _dense_out[out.dtype] = out
         print(out)
     else:
-        torch.allclose(_dense_out, out)
+        torch.allclose(_dense_out[out.dtype], out)
 
     # Backward
     if kernel is InplaceSoftmax:
@@ -80,11 +80,11 @@ def test_dense(input_data, kernel):
 
     # Check
     global _dense_grad
-    if _dense_grad is None:
-        _dense_grad = weight.grad
+    if weight.dtype not in _dense_grad:
+        _dense_grad[weight.dtype] = weight.grad
         print(weight.grad)
     else:
-        torch.allclose(_dense_grad, weight.grad)
+        torch.allclose(_dense_grad[weight.dtype], weight.grad)
 
 
 @skip_if_no_cuda

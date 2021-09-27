@@ -18,12 +18,14 @@ except ImportError:
     triton_softmax = None
 
 
-def get_data(shape: Tuple[Tuple[int, int], Tuple[int, int]]) -> Tuple[torch.Tensor, torch.nn.Parameter, torch.Tensor]:
+def get_data(
+    shape: Tuple[Tuple[int, int], Tuple[int, int]], dtype: torch.dtype = torch.float16
+) -> Tuple[torch.Tensor, torch.nn.Parameter, torch.Tensor]:
     """ Utility function for getting some tensors for testing and benchmarking."""
     (tokens, d1), (d2, vocabs) = shape
     assert d1 == d2
-    input = torch.rand(tokens, d1, device="cuda")
-    weight = nn.Linear(d2, vocabs, bias=False, device="cuda").weight
+    input = torch.rand(tokens, d1, device="cuda", dtype=dtype)
+    weight = nn.Linear(d2, vocabs, bias=False, device="cuda", dtype=dtype).weight
     target = (torch.rand(tokens, device="cuda") * vocabs).long()
     return input, weight, target
 
@@ -34,16 +36,24 @@ class BaselineSoftmax(nn.Module):
     def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0):  # k is ignored.
         super().__init__()
         out_dim, in_dim = proj_weight.shape
-        self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda")
+        self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda", dtype=proj_weight.dtype)
         self.fc.weight = proj_weight
+        assert self.fc.weight.dtype in [torch.float16, torch.float32], self.fc.weight.dtype
+        self.fp16 = self.fc.weight.dtype == torch.float16
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
         input, target = input
         assert isinstance(input, torch.Tensor)
         assert isinstance(target, torch.Tensor)
+        if self.fp16:
+            assert input.dtype == torch.float16
         x = self.fc(input)
+        if self.fp16:
+            assert x.dtype == torch.float16
+            x = x.float()
         x = F.softmax(x, dim=-1)
+        assert x.dtype == torch.float32
         return x
 
 
@@ -53,6 +63,7 @@ class TritonSoftmax(BaselineSoftmax):
     def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0):  # k is ignored.
         super().__init__(proj_weight)
         assert triton_softmax is not None, "Need to import xformers"
+        assert proj_weight.dtype == torch.float32, "fp16 not yet supported"
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
@@ -75,6 +86,7 @@ class InplaceSoftmax(nn.Module):
 
     def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0):  # k is ignored.
         super().__init__()
+        assert proj_weight.dtype == torch.float32, "fp16 not yet supported"
         out_dim, in_dim = proj_weight.shape
         self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda")
         self.fc.weight = proj_weight
@@ -110,8 +122,10 @@ class TiledSoftmax(nn.Module):
     def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 16):  # k is ignored
         super().__init__()
         out_dim, in_dim = proj_weight.shape
-        self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda")
+        self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda", dtype=proj_weight.dtype)
         self.fc.weight = proj_weight
+        assert self.fc.weight.dtype in [torch.float16, torch.float32]
+        self.fp16 = self.fc.weight.dtype == torch.float16
         self.tile_factor = tile_factor
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
@@ -119,11 +133,17 @@ class TiledSoftmax(nn.Module):
         input, target = input
         assert isinstance(input, torch.Tensor)
         assert isinstance(target, torch.Tensor)
+        if self.fp16:
+            assert input.dtype == torch.float16
         tokens, _ = input.shape
         out = []
         for i in torch.split(input, tokens // self.tile_factor, 0):
             x = self.fc(i)
+            if self.fp16:
+                assert x.dtype == torch.float16
+                x = x.float()
             x = F.softmax(x, dim=-1)
+            assert x.dtype == torch.float32
             out.append(x)
         # Do not use torch.cat(out, dim=0), which would double the memory.
         return out
@@ -139,6 +159,7 @@ class TopKSoftmax(nn.Module):
 
     def __init__(self, proj_weight: torch.nn.Parameter, k: int):
         super().__init__()
+        assert proj_weight.dtype == torch.float32, "fp16 not yet supported"
         out_dim, in_dim = proj_weight.shape
         self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda")
         self.fc.weight = proj_weight
@@ -177,17 +198,21 @@ class TopKTiledSoftmax(nn.Module):
         self.vocabs = out_dim
         self.fcs = []
         for w in torch.split(proj_weight, out_dim // tile_factor, 0):
-            self.fcs.append(nn.Linear(in_dim, w.shape[0], bias=False, device="cuda"))
+            self.fcs.append(nn.Linear(in_dim, w.shape[0], bias=False, device="cuda", dtype=proj_weight.dtype))
             delattr(self.fcs[-1], "weight")
             self.fcs[-1].weight = w  # type: ignore
         self.k = k
         self.weight = proj_weight.T
+        assert self.weight.dtype in [torch.float16, torch.float32]
+        self.fp16 = self.weight.dtype == torch.float16
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
         input, target = input
         assert isinstance(input, torch.Tensor)
         assert isinstance(target, torch.Tensor)
+        if self.fp16:
+            assert input.dtype == torch.float16
         tokens, _ = input.shape
         val = []
         idx = []
@@ -219,6 +244,8 @@ class TopKTiledSoftmax(nn.Module):
         result += result_target
 
         # Softmax (assuming fill value is -inf) and return the dense result
+        if self.fp16:
+            result = result.float()
         return torch.sparse.softmax(result, dim=1).to_dense()
 
 
@@ -234,6 +261,7 @@ class TopKFaissSoftmax(nn.Module):
 
     def __init__(self, proj_weight: torch.nn.Parameter, k: int):
         super().__init__()
+        assert proj_weight.dtype == torch.float32, "fp16 not yet supported"
         self.k = k
         global _res
         if _res is None:

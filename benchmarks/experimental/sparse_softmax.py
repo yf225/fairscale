@@ -10,7 +10,7 @@ import time
 import torch
 from torch.cuda import Event
 
-from fairscale.experimental.nn import (
+from fairscale.experimental.nn import (  # noqa: F401
     BaselineSoftmax,
     InplaceSoftmax,
     TiledSoftmax,
@@ -33,12 +33,12 @@ SHAPES = [
 ]
 KERNELS = [
     BaselineSoftmax,
-    TritonSoftmax,
-    InplaceSoftmax,
+    #    TritonSoftmax,
+    #    InplaceSoftmax,
     TiledSoftmax,
-    TopKSoftmax,
+    #    TopKSoftmax,
     TopKTiledSoftmax,
-    TopKFaissSoftmax,
+    #    TopKFaissSoftmax,
 ]
 
 
@@ -95,11 +95,14 @@ def main():
         name = shape[0]
         results["peak_mem"][name] = {}
         results["durations"][name] = {}
-        data = get_data(shape[1:])
+        dtype = torch.float16
+        data = get_data(shape[1:], dtype)
         for kernel in KERNELS:
             k_name = kernel.__name__
-            print(f"Running {k_name} with {name} data")
-            peak_mem, durations = run_on_gpu(kernel, data, repeats, False)
+            no_grad = "no_grad"
+            no_grad = "grad"
+            print(f"Running {k_name} with {name} {dtype} {no_grad} data")
+            peak_mem, durations = run_on_gpu(kernel, data, repeats, no_grad == "no_grad")
             results["peak_mem"][name][k_name] = peak_mem
             results["durations"][name][k_name] = durations
     pprint(results)
