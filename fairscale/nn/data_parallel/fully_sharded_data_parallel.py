@@ -8,7 +8,6 @@ import copy
 from enum import Enum, auto
 import functools
 import logging
-import math
 from math import inf
 from random import randint
 import time
@@ -85,20 +84,6 @@ class TrainingState(Enum):
     BACKWARD_PRE = auto()
     BACKWARD_POST = auto()
     SUMMON_FULL_PARAMS = auto()
-
-
-import gc
-
-
-def log_tensors_in_memory(label):
-    gc.collect()
-    if torch.distributed.get_rank() == 0:
-        for obj in gc.get_objects():
-            try:
-                if torch.is_tensor(obj) or (hasattr(obj, "data") and torch.is_tensor(obj.data)):
-                    print(label, type(obj), type(obj).__name__, obj.size(), obj.device, obj.storage().size())
-            except:
-                pass
 
 
 class FullyShardedDataParallel(nn.Module):
@@ -1110,7 +1095,7 @@ class FullyShardedDataParallel(nn.Module):
             # pass. In this case, it's important to pre-allocate the CPU grad
             # shard in pinned memory so that we can do a non-blocking transfer.
             p._cpu_grad = torch.zeros_like(p.data, device="cpu").pin_memory()
-            
+
     def _set_is_root(self) -> None:
         """If ``True``, implies that no other :class:`FullyShardedDataParallel`
         instance wraps this one. Called once by :func:`_lazy_init`.
@@ -1236,7 +1221,7 @@ class FullyShardedDataParallel(nn.Module):
                 # tensors and not have to write to disk in the case of eval.
                 free_storage_(p._fp32_shard)
                 free_storage_(p.data)
-            
+
             # At the end of forward you should have ideally freed all memory. However
             # you will be left with 2 tensors still allocated 1) full params
             # 2) grads and this will depend on if you are setting reshard_after_forward
@@ -1308,11 +1293,8 @@ class FullyShardedDataParallel(nn.Module):
             else:
                 self._use_full_params()
 
-            log_tensors_in_memory("_pre_backward_hook: rebuild")
-
             # Prepare p.grad.
             self._prep_grads_for_backward()
-            log_tensors_in_memory("_pre_backward_hook: prep_grads")
 
         def _register_hook(t: torch.Tensor) -> torch.Tensor:
             if t.requires_grad:

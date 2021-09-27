@@ -221,7 +221,9 @@ class SimpleLinear(nn.Module):
 
 class TestSsdLoading(DistributedTest):
     def test_ssd_offloading_train(self):
-        self.skipTest("Fix error:  RuntimeError: Expected all tensors to be on the same device, but found at least two devices, meta and cpu!")
+        self.skipTest(
+            "Fix error:  RuntimeError: Expected all tensors to be on the same device, but found at least two devices, meta and cpu!"
+        )
         # Uncomment the following lines once training works.
         # By not spawning it is easier to gdb into the stack.
         # test_fn = functools.partial(self._test_ssd_offload_train)
@@ -234,7 +236,9 @@ class TestSsdLoading(DistributedTest):
         test_fn(0, group)
 
     def test_ssd_offloading_train_simple(self):
-        self.skipTest("Fix error:  RuntimeError: Expected all tensors to be on the same device, but found at least two devices, meta and cpu!")
+        self.skipTest(
+            "Fix error:  RuntimeError: Expected all tensors to be on the same device, but found at least two devices, meta and cpu!"
+        )
         test_fn = functools.partial(self._test_ssd_offload_train_simple)
         spawn_and_init(test_fn)
 
@@ -330,7 +334,7 @@ class TestSsdLoading(DistributedTest):
         output = model(*input)
         loss = model.module.get_loss(input, output).to(model_device)
         assert loss.dtype == torch.float32
-        
+
         model.module.run_backward(loss)
         params = [p for p in model.parameters()]
         for handle, param in zip(model.ssd_buffer.get_tensors(), params):
