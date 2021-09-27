@@ -221,6 +221,9 @@ class SimpleLinear(nn.Module):
 
 class TestSsdLoading(DistributedTest):
     def test_ssd_offloading_train(self):
+
+        # Uncomment the following lines once training works.
+        # By not spawning it is easier to gdb into the stack.
         # test_fn = functools.partial(self._test_ssd_offload_train)
         # spawn_and_init(test_fn)
         import tempfile
@@ -263,8 +266,8 @@ class TestSsdLoading(DistributedTest):
 
         # With SSD offload only local_state_dict will work. We can support global
         # state dict if we think it is necessary.
-        state_dict = model.local_state_dict()
-        model.load_local_state_dict(state_dict)
+        # state_dict = model.local_state_dict()
+        # model.load_local_state_dict(state_dict)
 
         self._eval_with_config(model, config["mixed_precision"])
 

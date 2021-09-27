@@ -1105,9 +1105,8 @@ class FullyShardedDataParallel(nn.Module):
             )
             free_storage_(p._full_param_padded)
 
-        # TODO(anj): Condition this on eval rather than ssd_offload. Short term fix
-        # for seeing memory usage.
-        if self.move_grads_to_cpu and not self.ssd_offload:
+        print(f"self.training {self.training}")
+        if self.move_grads_to_cpu and self.training:
             # We can optionally move the grad shard to CPU during the backward
             # pass. In this case, it's important to pre-allocate the CPU grad
             # shard in pinned memory so that we can do a non-blocking transfer.
@@ -1225,7 +1224,7 @@ class FullyShardedDataParallel(nn.Module):
 
         outputs = self.module(*args, **kwargs)
 
-        if self.reshard_after_forward or self.ssd_offload:
+        if self.reshard_after_forward:
             self._free_full_params()
             if self.mixed_precision:
                 self._free_fp16_param_shard()
@@ -1236,10 +1235,13 @@ class FullyShardedDataParallel(nn.Module):
             for p in self.params:
                 # TODO(anj): We need another function that enables us to drop the current
                 # tensors and not have to write to disk in the case of eval.
-                if hasattr(p, "_cpu_grad"):
-                    del p._cpu_grad
                 free_storage_(p._fp32_shard)
                 free_storage_(p.data)
+            
+            # At the end of forward you should have ideally freed all memory. However
+            # you will be left with 2 tensors still allocated 1) full params
+            # 2) grads and this will depend on if you are setting reshard_after_forward
+            # and if you are training the model.
 
         # Switch to main FP32 param shard. We maintain this invariant throughout
         # the code, i.e., ``p.data == p._fp32_shard`` after each function. This
