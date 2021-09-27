@@ -190,8 +190,6 @@ class SsdTensorHandle(torch.Tensor):
 
     def point_to_file(self, filename: str, offset: int) -> None:
         self.set_file_params(filename, offset)
-        if torch.distributed.get_rank() == 0:
-            print(f"Release: point_to_file:self.tensor {self.tensor.size()}")
         self.tensor = None
 
     def point_to_tensor(self, tensor: torch.Tensor) -> None:
@@ -238,7 +236,6 @@ class SsdTensorHandle(torch.Tensor):
         ssd_tensor_handles = []
 
         def unwrap(e):
-            print(f"e {e}")
             if isinstance(e, SsdTensorHandle):
                 t = e.to_tensor()
                 ssd_tensor_handles.append((e, t._version))
@@ -255,7 +252,12 @@ class SsdTensorHandle(torch.Tensor):
             if saved_version != e.tensor._version:
                 r.to_file()
             """
-            e.to_file()
+            # There is file saving/reading logic in SsdHandle and SsdBuffer which
+            # is in conflict.
+            try:
+                e.to_file()
+            except e:
+                pass
         return r
 
 
@@ -263,8 +265,8 @@ class SsdTensorHandle(torch.Tensor):
 # more tensors
 class SsdBuffer:
     def __init__(self, num_elems: int, filename: str) -> None:
-        # TODO(anj): Modify this to pass the size of the buffer rather
-        # than a tensor.
+        # TODO(anj): add an option of passing the dtype of the buffer
+        # we want to track.
         self.buffer: Optional[torch.Tensor] = torch.empty((num_elems,))
         self.filename = filename
         self.offset = 0
@@ -272,7 +274,7 @@ class SsdBuffer:
 
     def allocate(self, n: int) -> SsdTensorHandle:
         assert n > 0
-        assert self.buffer is not None
+        assert list(self.buffer.size()) != [1]
         assert self.can_alloc(n)
 
         tensor = self.buffer.narrow(0, self.offset, n)
@@ -285,7 +287,7 @@ class SsdBuffer:
         return handle
 
     def insert(self, tensor: torch.Tensor) -> SsdTensorHandle:
-        assert self.buffer is not None
+        assert list(self.buffer.size()) != [1]
         # For the non sharded case, the tensor will not be flattened
         tensor = tensor.reshape(-1)
         assert self.buffer.dtype == tensor.dtype
@@ -294,14 +296,14 @@ class SsdBuffer:
         return handle
 
     def can_alloc(self, n: int) -> bool:
-        assert self.buffer is not None
+        assert list(self.buffer.size()) != [1]
         return (self.offset + n) <= self.buffer.numel()
 
     def get_tensors(self) -> List[SsdTensorHandle]:
         return [t for t in self.tensors.values()]
 
     def to_disk(self) -> None:
-        assert self.buffer is not None
+        assert list(self.buffer.size()) != [1]
         # TODO(anj): Add comment about why we do this.
         valid_data = self.buffer.narrow(0, 0, self.offset)
         write(valid_data, self.filename)
@@ -310,7 +312,7 @@ class SsdBuffer:
         for offset, t in self.tensors.items():
             t.point_to_file(self.filename, offset)
 
-        # TODO(anj-s): This does not GC. 
+        # TODO(anj-s): This does not GC.
         self.buffer = torch.empty((1))
 
     def from_disk(self, num_elems: int) -> None:

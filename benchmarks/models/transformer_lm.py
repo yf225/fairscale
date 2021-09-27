@@ -83,7 +83,7 @@ class TransformerLM(nn.Sequential):
             EmbeddingLayer(ntokens, ninp, initrange),
             PositionalEncodingLayer(ninp, dropout),
         ]
-        for _ in range(ndecoder+50):
+        for _ in range(ndecoder + 50):
             layers.append(TransformerDecoderLayer(ninp, nhead, nhid, dropout))
 
         layers.append(LinearLayer(ninp, ntokens, initrange))

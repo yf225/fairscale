@@ -88,6 +88,8 @@ class TrainingState(Enum):
 
 
 import gc
+
+
 def log_tensors_in_memory(label):
     gc.collect()
     if torch.distributed.get_rank() == 0:
@@ -601,7 +603,7 @@ class FullyShardedDataParallel(nn.Module):
         """
         self.numel_padded_per_param = []
         for p in self.params:
-            
+
             assert not hasattr(p, "_is_sharded")
             assert p.is_floating_point()
             if self.mixed_precision:
@@ -628,7 +630,7 @@ class FullyShardedDataParallel(nn.Module):
                 del orig_data
                 self.numel_padded_per_param.append(num_padded)
                 free_storage_(p.data)
-                
+
             else:
                 orig_data = p.data
                 p.data, num_padded = self._get_shard(p.data)
@@ -1238,7 +1240,6 @@ class FullyShardedDataParallel(nn.Module):
                     del p._cpu_grad
                 free_storage_(p._fp32_shard)
                 free_storage_(p.data)
-                
 
         # Switch to main FP32 param shard. We maintain this invariant throughout
         # the code, i.e., ``p.data == p._fp32_shard`` after each function. This

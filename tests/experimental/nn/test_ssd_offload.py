@@ -76,8 +76,7 @@ def test_ssd_buffer_basic():
         refa_tensor = torch.rand((128), dtype=torch.float32)
         refb_tensor = torch.rand((128), dtype=torch.float32)
         refc_tensor = torch.rand((128), dtype=torch.float32)
-        buffer = torch.empty((1024), dtype=torch.float32)
-        ssd_buf = so.SsdBuffer(buffer, f.name)
+        ssd_buf = so.SsdBuffer(1024, f.name)
 
         hdl_a = ssd_buf.insert(refa_tensor)
         hdl_b = ssd_buf.insert(refb_tensor)
@@ -92,7 +91,6 @@ def test_ssd_buffer_basic():
         assert torch.equal(refc_tensor, hdl_c.get_tensor())
 
         tensors = ssd_buf.get_tensors()
-
         assert hdl_a in tensors
         assert hdl_b in tensors
         assert hdl_c in tensors
@@ -124,8 +122,7 @@ def test_ssd_buffer_basic():
         hdl_b.copy_into_tensor(b_tensor_copy2)
         assert torch.equal(refb_tensor, b_tensor_copy2)
 
-        buffer = torch.empty((384), dtype=torch.float32)
-        ssd_buf.from_disk(buffer)
+        ssd_buf.from_disk(384)
 
         assert hdl_a.is_available()
         assert hdl_b.is_available()
@@ -140,22 +137,19 @@ def test_ssd_buffer_too_small_from_disk():
     _init()
     with tempfile.NamedTemporaryFile() as f:
         refa_tensor = torch.rand((128), dtype=torch.float32)
-        buffer = torch.empty((128), dtype=torch.float32)
-        ssd_buf = so.SsdBuffer(buffer, f.name)
+        ssd_buf = so.SsdBuffer(128, f.name)
         hdl_a = ssd_buf.insert(refa_tensor)
         ssd_buf.to_disk()
 
-        buffer = torch.empty((127), dtype=torch.float32)
         with pytest.raises(RuntimeError):
-            ssd_buf.from_disk(buffer)
+            ssd_buf.from_disk(127)
 
 
 def test_ssd_buffer_null_buffer():
     _init()
     with tempfile.NamedTemporaryFile() as f:
         refa_tensor = torch.rand((128), dtype=torch.float32)
-        buffer = torch.empty((128), dtype=torch.float32)
-        ssd_buf = so.SsdBuffer(buffer, f.name)
+        ssd_buf = so.SsdBuffer(128, f.name)
         hdl_a = ssd_buf.insert(refa_tensor)
         ssd_buf.to_disk()
 

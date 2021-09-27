@@ -8,13 +8,13 @@ from collections import defaultdict
 import functools
 from functools import reduce
 import gc
+import glob
 import logging
 import math
 import operator
 import operator as op
-import time
 import os
-import glob
+import time
 
 import numpy as np
 import psutil
@@ -32,7 +32,6 @@ from fairscale.nn import auto_wrap, default_auto_wrap_policy, enable_wrap
 from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
 
 RPC_PORT = 29501
-
 
 
 def init_random_seed(seed: int):
@@ -166,7 +165,6 @@ def log_tensors_in_memory(label):
                 pass
 
 
-
 def train(model_config, model, benchmark_config, model_specs, args):
     lm_dataloader, _, _ = model_config["data"]
     criterion = benchmark_config["criterion"]
@@ -249,11 +247,11 @@ def train(model_config, model, benchmark_config, model_specs, args):
 def eval(model_config, model, benchmark_config, model_specs, args):
     print(f"Benchmarking Eval..")
     lm_dataloader, _, _ = model_config["data"]
-    
+
     criterion = benchmark_config["criterion"]
-    
+
     vocab_size = model_specs["vocab_size"]
-    
+
     model.eval()
     # log_number_of_parameters(model)
 
@@ -412,6 +410,7 @@ def get_golden_config(model_name, args):
     else:
         raise RuntimeError("Unrecognized args.model_mame " % args.model_name)
 
+
 class SimpleLinear(torch.nn.Module):
     def __init__(self, rank, input_size, output_size, layers=1, **unused_kwargs):
         super().__init__()
@@ -458,6 +457,7 @@ def set_up(rank):
     assert num_devices > 0
     init_random_seed(0)
 
+
 class TimeKeeper:
     def __init__(self):
         self.start_time = time.time()
@@ -481,7 +481,7 @@ def rmf(filename: str) -> None:
 
 def benchmark_simple_linear_model(rank, args):
     set_up(rank)
-    
+
     def benchmark_fsdp_ssd_offload():
         result = {}
         SIZE = 8
@@ -493,16 +493,16 @@ def benchmark_simple_linear_model(rank, args):
         time.sleep(5)
         tk.print_time("INIT_CUDA", 1.0)
         monitor_memory(rank, result, "INIT_CUDA")
-        
+
         model = SimpleLinear(rank, input_size=SIZE, output_size=SIZE, layers=args.num_layers)
         log_number_of_parameters(model)
 
         tk.print_time("CPU_MODEL", 1.0)
         monitor_memory(rank, result, "CPU_MODEL")
-        
+
         my_auto_wrap_policy = functools.partial(default_auto_wrap_policy, min_num_params=args.min_wrap_params)
         config = {}
-        config["flatten_parameters"] = not(args.skip_flatten_parameters)
+        config["flatten_parameters"] = not (args.skip_flatten_parameters)
         config["ssd_offload"] = args.ssd_offload
         config["move_params_to_cpu"] = args.move_params_to_cpu
         config["mixed_precision"] = args.fp16
@@ -523,7 +523,7 @@ def benchmark_simple_linear_model(rank, args):
                 output = model(*input)
                 tk.print_time(f"eval step: {i}", 1.0)
                 monitor_memory(rank, result, f"eval step: {i}")
-        
+
         tk.print_time("EVAL_END")
         monitor_memory(rank, result, "EVAL_ENDs")
         return result
@@ -542,7 +542,7 @@ def benchmark_simple_linear_model(rank, args):
         model = model.cuda()
         my_auto_wrap_policy = functools.partial(default_auto_wrap_policy, min_num_params=args.min_wrap_params)
         config = {}
-        config["flatten_parameters"] = not(args.skip_flatten_parameters)
+        config["flatten_parameters"] = not (args.skip_flatten_parameters)
         config["move_params_to_cpu"] = args.move_params_to_cpu
         config["mixed_precision"] = args.fp16
         with enable_wrap(wrapper_cls=FSDP, **config):
@@ -560,7 +560,7 @@ def benchmark_simple_linear_model(rank, args):
             for i in range(num_steps):
                 output = model(*input)
                 monitor_memory(rank, result, f"eval step: {i}")
-        
+
         monitor_memory(rank, result, "EVAL_ENDs")
         return result
 
@@ -568,9 +568,9 @@ def benchmark_simple_linear_model(rank, args):
     orig_result = benchmark_fsdp_vanilla()
     diff_result = {}
     for (k1, v1), (k2, v2) in zip(orig_result.items(), ssd_result.items()):
-        diff_result[k1] = v1-v2
+        diff_result[k1] = v1 - v2
         if torch.distributed.get_rank() == 0:
-            print(f'K: {k1} Diff: {diff_result[k1]}')
+            print(f"K: {k1} Diff: {diff_result[k1]}")
 
     fileList = glob.glob(os.getcwd() + "/*_rank*")
     for file in fileList:
@@ -596,7 +596,7 @@ def benchmark_transformer_model(rank, args):
     config["mixed_precision"] = args.fp16
     with enable_wrap(wrapper_cls=FSDP, **config):
         fsdp_model = FSDP(auto_wrap(model, auto_wrap_policy=my_auto_wrap_policy))
-    
+
     if args.dry_run:
         if args.train:
             train(model_config, fsdp_model, benchmark_config, model_specs, args)
