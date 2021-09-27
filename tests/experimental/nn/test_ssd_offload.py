@@ -91,9 +91,9 @@ def test_ssd_buffer_basic():
         assert torch.equal(refc_tensor, hdl_c.get_tensor())
 
         tensors = ssd_buf.get_tensors()
-        assert hdl_a in tensors
-        assert hdl_b in tensors
-        assert hdl_c in tensors
+        assert hdl_a is tensors[0]
+        assert hdl_b is tensors[1]
+        assert hdl_c is tensors[2]
 
         # test read_into_tensor when handle.is_available()
         b_tensor_copy1 = torch.empty_like(refb_tensor)

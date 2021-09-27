@@ -1105,13 +1105,12 @@ class FullyShardedDataParallel(nn.Module):
             )
             free_storage_(p._full_param_padded)
 
-        print(f"self.training {self.training}")
         if self.move_grads_to_cpu and self.training:
             # We can optionally move the grad shard to CPU during the backward
             # pass. In this case, it's important to pre-allocate the CPU grad
             # shard in pinned memory so that we can do a non-blocking transfer.
             p._cpu_grad = torch.zeros_like(p.data, device="cpu").pin_memory()
-
+            
     def _set_is_root(self) -> None:
         """If ``True``, implies that no other :class:`FullyShardedDataParallel`
         instance wraps this one. Called once by :func:`_lazy_init`.
@@ -1224,7 +1223,7 @@ class FullyShardedDataParallel(nn.Module):
 
         outputs = self.module(*args, **kwargs)
 
-        if self.reshard_after_forward:
+        if self.reshard_after_forward or self.ssd_offload:
             self._free_full_params()
             if self.mixed_precision:
                 self._free_fp16_param_shard()
@@ -1304,13 +1303,16 @@ class FullyShardedDataParallel(nn.Module):
             self.training_state = TrainingState.BACKWARD_PRE
 
             # All-gather full parameters.
-            if self.reshard_after_forward:
+            if self.reshard_after_forward or self.ssd_offload:
                 self._rebuild_full_params()
             else:
                 self._use_full_params()
 
+            log_tensors_in_memory("_pre_backward_hook: rebuild")
+
             # Prepare p.grad.
             self._prep_grads_for_backward()
+            log_tensors_in_memory("_pre_backward_hook: prep_grads")
 
         def _register_hook(t: torch.Tensor) -> torch.Tensor:
             if t.requires_grad:

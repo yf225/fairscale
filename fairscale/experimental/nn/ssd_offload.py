@@ -252,17 +252,11 @@ class SsdTensorHandle(torch.Tensor):
             if saved_version != e.tensor._version:
                 r.to_file()
             """
-            # There is file saving/reading logic in SsdHandle and SsdBuffer which
-            # is in conflict.
-            try:
-                e.to_file()
-            except e:
-                pass
+            e.to_file()
         return r
 
 
-# Class supporting a single SSD file backing one or
-# more tensors
+# Class supporting a single SSD file backing one or more tensors
 class SsdBuffer:
     def __init__(self, num_elems: int, filename: str) -> None:
         # TODO(anj): add an option of passing the dtype of the buffer
@@ -282,6 +276,7 @@ class SsdBuffer:
         tensor_offset = self.offset
         handle = SsdTensorHandle.from_tensor(tensor)
         self.tensors[tensor_offset] = handle
+        handle.set_file_params(self.filename, tensor_offset)
         self.offset += n
 
         return handle
@@ -304,7 +299,7 @@ class SsdBuffer:
 
     def to_disk(self) -> None:
         assert list(self.buffer.size()) != [1]
-        # TODO(anj): Add comment about why we do this.
+        # TODO(anj): Add comment about why we use `narrow`.
         valid_data = self.buffer.narrow(0, 0, self.offset)
         write(valid_data, self.filename)
 
@@ -312,7 +307,8 @@ class SsdBuffer:
         for offset, t in self.tensors.items():
             t.point_to_file(self.filename, offset)
 
-        # TODO(anj-s): This does not GC.
+        # TODO(anj-s): Setting this to None does not result in GC picking
+        # this reference up.
         self.buffer = torch.empty((1))
 
     def from_disk(self, num_elems: int) -> None:
