@@ -6,11 +6,16 @@
 
 from typing import Any, Tuple
 
-import faiss
-import faiss.contrib.torch_utils  # noqa: F401, actually used just by importing
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+try:
+    import faiss
+    import faiss.contrib.torch_utils  # noqa: F401, actually used just by importing
+except ImportError:
+    faiss = None
+
 
 try:
     from xformers.triton.softmax import softmax as triton_softmax
@@ -261,6 +266,7 @@ class TopKFaissSoftmax(nn.Module):
 
     def __init__(self, proj_weight: torch.nn.Parameter, k: int):
         super().__init__()
+        assert faiss is not None, "Need to pip install FAISS"
         assert proj_weight.dtype == torch.float32, "fp16 not yet supported"
         self.k = k
         global _res

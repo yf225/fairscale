@@ -22,9 +22,7 @@ from fairscale.experimental.nn import (  # noqa: F401
 from fairscale.experimental.nn.sparse_softmax import get_data
 from fairscale.utils.testing import get_smi_memory
 
-""" Benchmarking various softmax kernels with label and top-K sparsity. """
-
-# TODO: measure mixed precisions.
+""" Benchmarking various softmax kernels. Some are dense and some are with label and top-K sparsity. """
 
 SHAPES = [
     # name, activation, FC weights
