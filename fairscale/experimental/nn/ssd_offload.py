@@ -340,15 +340,16 @@ class TorchSaver:
             obj, f, self.pickle_module, pickle_protocol=pickle_protocol, _use_new_zipfile_serialization=False
         )
 
+
 class SsdParameter(torch.nn.Parameter, SsdTensorHandle):
     @staticmethod
     def __new__(
         cls: SsdParameter, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = False
     ) -> SsdParameter:
         r = SsdTensorHandle._make_subclass(cls, torch.empty(shape, dtype=dtype), requires_grad)
-        
+
         return r
-    
+
     def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool) -> None:
         super(SsdParameter, self).__init__(shape, dtype, requires_grad)
 
@@ -377,6 +378,7 @@ class SsdParameter(torch.nn.Parameter, SsdTensorHandle):
             """
             e.to_file()
         return r
+
 
 class DisableMemoizationPicklerModule:
     @classmethod

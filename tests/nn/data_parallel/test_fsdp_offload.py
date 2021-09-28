@@ -8,6 +8,7 @@ import glob
 import itertools
 import os
 import sys
+import tempfile
 import time
 import unittest
 
@@ -16,12 +17,11 @@ import torch
 from torch import nn
 import torch.distributed
 
+import fairscale.experimental.nn.ssd_offload as so
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 from fairscale.nn.data_parallel import FullyShardedDataParallel, TrainingState
 from fairscale.utils import torch_version
 from fairscale.utils.testing import dist_init, rmf, spawn_for_all_world_sizes
-import tempfile
-import fairscale.experimental.nn.ssd_offload as so
 
 # How to use remote-pdb: https://gist.github.com/sshleifer/9d43351957179c13606e015b072927d4
 # All helper functions called by spawn must be either @classmethod, @staticmethod
@@ -222,8 +222,9 @@ class SimpleLinear(nn.Module):
 
 
 class TestSsdLoading(DistributedTest):
-
     def test_ssd_offloading_param(self):
+        # Uncomment the following lines once training works.
+        # By not spawning it is easier to gdb into the stack.
         # test_fn = functools.partial(self._test_ssd_offload_train)
         # spawn_and_init(test_fn)
         import tempfile
@@ -287,7 +288,6 @@ class TestSsdLoading(DistributedTest):
             print(f"param.grad {param.grad}")
             optimizer_ssd.step()
             print(f"param {param.to_tensor()}")
-
 
     @classmethod
     def _test_ssd_offload_eval(self, rank, group, config):
