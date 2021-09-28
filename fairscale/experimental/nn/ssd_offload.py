@@ -32,7 +32,7 @@ def _tensor_to_bytes_chunks(t: torch.Tensor, chunk_idx: int, chunk_size_bytes: i
 
 def write(t: torch.Tensor, filename: str, file_offset_bytes: int = 0) -> None:
     num_chunks = _get_num_chunks(t)
-    with open(filename, "wb") as f:
+    with open(filename, "r+b") as f:
         f.seek(file_offset_bytes)
         for i in range(num_chunks):
             f.write(_tensor_to_bytes_chunks(t, i))
