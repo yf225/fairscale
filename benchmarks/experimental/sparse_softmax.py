@@ -3,6 +3,7 @@
 # This source code is licensed under the BSD license found in the
 # LICENSE file in the root directory of this source tree.
 
+import argparse
 import contextlib
 from pprint import pprint
 import time
@@ -85,6 +86,12 @@ def run_on_gpu(kernel, data, repeats, no_grad):
 
 
 def main():
+    parser = argparse.ArgumentParser("Benchmarking softmax kernels")
+
+    parser.add_argument("--dtype", type=str, choices=["fp16", "fp32"], default="fp16")
+    parser.add_argument("--grad", type=str, choices=["grad", "no_grad"], default="grad")
+    args = parser.parse_args()
+
     repeats = 9
     results = {}
     results["peak_mem"] = {}
@@ -93,12 +100,11 @@ def main():
         name = shape[0]
         results["peak_mem"][name] = {}
         results["durations"][name] = {}
-        dtype = torch.float16
+        dtype = torch.float32 if args.dtype == "fp32" else torch.float16
         data = get_data(shape[1:], dtype)
         for kernel in KERNELS:
             k_name = kernel.__name__
-            no_grad = "no_grad"
-            no_grad = "grad"
+            no_grad = args.grad
             print(f"Running {k_name} with {name} {dtype} {no_grad} data")
             peak_mem, durations = run_on_gpu(kernel, data, repeats, no_grad == "no_grad")
             results["peak_mem"][name][k_name] = peak_mem
