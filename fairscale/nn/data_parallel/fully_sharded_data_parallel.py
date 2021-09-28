@@ -613,9 +613,10 @@ class FullyShardedDataParallel(nn.Module):
                 assert p.dtype == torch.float32
 
             # If world_size is 1, then we all-reduce grads instead of sharding.
+            p._is_sharded = self.world_size > 1
             p._orig_size = p.data.size()
 
-            if self.world_size == 1:
+            if not p._is_sharded:
                 p._is_sharded = False
                 self.numel_padded_per_param.append(0)
                 if self.ssd_offload:
@@ -623,6 +624,7 @@ class FullyShardedDataParallel(nn.Module):
                     p._handle = self.ssd_buffer.insert(p.data)
                     free_storage_(p.data)
                 continue
+            p._is_sharded = True
 
             # Replace p.data with the relevant shard.
             if self.ssd_offload:
