@@ -8,7 +8,7 @@ from typing import IO, Any, BinaryIO, Callable, Dict, Iterator, List, Optional, 
 
 import numpy as np
 import torch
-from torch.optim import _functional as F
+# from torch.optim import _functional as F
 from torch.serialization import DEFAULT_PROTOCOL as DEFAULT_PROTOCOL
 from torch.utils._pytree import tree_map
 
@@ -32,7 +32,8 @@ def _tensor_to_bytes_chunks(t: torch.Tensor, chunk_idx: int, chunk_size_bytes: i
 
 def write(t: torch.Tensor, filename: str, file_offset_bytes: int = 0) -> None:
     num_chunks = _get_num_chunks(t)
-    with open(filename, "r+b") as f:
+    file_flags = "r+b" if os.path.exists(filename) else "wb"
+    with open(filename, file_flags) as f:
         f.seek(file_offset_bytes)
         for i in range(num_chunks):
             f.write(_tensor_to_bytes_chunks(t, i))
@@ -145,7 +146,7 @@ class SsdTensorHandle(torch.Tensor):
     def __new__(
         cls: SsdTensorHandle, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = False
     ) -> SsdTensorHandle:
-        r = torch.Tensor._make_subclass(cls, torch.empty(shape, dtype=dtype).to("meta"), requires_grad)
+        r = torch.Tensor._make_wrapper_subclass(cls, shape, dtype=dtype, requires_grad=requires_grad)
         return r
 
     def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool) -> None:
@@ -248,11 +249,13 @@ class SsdTensorHandle(torch.Tensor):
 
         for e, saved_version in ssd_tensor_handles:
             # TODO: version counter trick doesn't work
-            """
-            if saved_version != e.tensor._version:
-                r.to_file()
-            """
-            e.to_file()
+            # if saved_version != e.tensor._version:
+            #    r.to_file()
+
+            inplace_is_this_tensor = func.__name__[-1] == "_" and e is args[0]
+            out_is_this_tensor = False if "out" not in kwargs else e is kwargs["out"]
+            if inplace_is_this_tensor or out_is_this_tensor:
+                e.to_file()
         return r
 
 
@@ -344,40 +347,15 @@ class TorchSaver:
 class SsdParameter(torch.nn.Parameter, SsdTensorHandle):
     @staticmethod
     def __new__(
-        cls: SsdParameter, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = False
+        cls: SsdParameter, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = True
     ) -> SsdParameter:
-        r = SsdTensorHandle._make_subclass(cls, torch.empty(shape, dtype=dtype), requires_grad)
+        r = SsdTensorHandle._make_wrapper_subclass(cls, shape, dtype=dtype, requires_grad=requires_grad)
 
         return r
 
-    def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool) -> None:
+
+    def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = True) -> None:
         super(SsdParameter, self).__init__(shape, dtype, requires_grad)
-
-    __torch_function__ = torch._C._disabled_torch_function_impl
-
-    @classmethod
-    def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
-        ssd_tensor_handles = []
-
-        def unwrap(e):
-            if isinstance(e, SsdParameter):
-                t = e.to_tensor()
-                ssd_tensor_handles.append((e, t._version))
-                return t
-            else:
-                return e
-
-        # need to test if tensor is modified
-        r = func(*tree_map(unwrap, args), **tree_map(unwrap, kwargs))
-
-        for e, saved_version in ssd_tensor_handles:
-            # TODO: version counter trick doesn't work
-            """
-            if saved_version != e.tensor._version:
-                r.to_file()
-            """
-            e.to_file()
-        return r
 
 
 class DisableMemoizationPicklerModule:

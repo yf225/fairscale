@@ -222,39 +222,48 @@ class SimpleLinear(nn.Module):
 
 
 class TestSsdLoading(DistributedTest):
-    def test_ssd_offloading_param(self):
+    def test_ssd_offloading_train_simple_param(self):
         # Uncomment the following lines once training works.
         # By not spawning it is easier to gdb into the stack.
-        # test_fn = functools.partial(self._test_ssd_offload_train)
-        # spawn_and_init(test_fn)
+        test_fn = functools.partial(self._test_ssd_offload_train_simple_param)
+        spawn_and_init(test_fn)
+        """
         import tempfile
 
-        test_fn = functools.partial(self._test_ssd_param)
+        test_fn = functools.partial(self._test_ssd_offload_train_simple_param)
         dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
         group = torch.distributed.new_group()
         test_fn(0, group)
+        """
 
-    def test_ssd_offloading_train(self):
+    def test_ssd_offloading_train_fsdp(self):
         self.skipTest(
             "Fix error:  RuntimeError: Expected all tensors to be on the same device, but found at least two devices, meta and cpu!"
         )
         # Uncomment the following lines once training works.
         # By not spawning it is easier to gdb into the stack.
-        # test_fn = functools.partial(self._test_ssd_offload_train)
+        # test_fn = functools.partial(self._test_ssd_offload_train_fsdp)
         # spawn_and_init(test_fn)
         import tempfile
 
-        test_fn = functools.partial(self._test_ssd_offload_train)
+        test_fn = functools.partial(self._test_ssd_offload_train_fsdp)
         dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
         group = torch.distributed.new_group()
         test_fn(0, group)
 
     def test_ssd_offloading_train_simple(self):
-        self.skipTest(
-            "Fix error:  RuntimeError: Expected all tensors to be on the same device, but found at least two devices, meta and cpu!"
-        )
+        # Uncomment the following lines once training works.
+        # By not spawning it is easier to gdb into the stack.
         test_fn = functools.partial(self._test_ssd_offload_train_simple)
         spawn_and_init(test_fn)
+
+        """
+        import tempfile
+
+        dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
+        group = torch.distributed.new_group()
+        test_fn(0, group)
+        """
 
     @parameterized.expand(CONFIG_OPTIONS, name_func=rename_test)
     def test_ssd_offloading_eval(self, config):
@@ -267,27 +276,39 @@ class TestSsdLoading(DistributedTest):
         spawn_and_init(functools.partial(self._test_identical_outputs, TransformerWithSharedParams, config))
 
     @classmethod
-    def _test_ssd_param(self, rank, group):
+    def _test_ssd_offload_train_simple_param(self, rank, group):
         with tempfile.NamedTemporaryFile() as f:
-            orig_tensor = torch.randn((4, 4), requires_grad=True)
-            print(f"orig_tensor {orig_tensor}")
+            orig_tensor = torch.randn((4, 4))
 
-            param = so.SsdParameter(orig_tensor.shape, orig_tensor.dtype, True)
-            param.point_to_tensor(orig_tensor)
-            param.set_file_params(f.name, 0)
-            param.to_file(release_tensor_after_write=True)
+            with torch.no_grad():
+                orig_copy = torch.empty_like(orig_tensor)
+                orig_copy.copy_(orig_tensor)
+                param = torch.nn.Parameter(orig_copy)
 
-            optimizer_ssd = torch.optim.SGD([param], lr=0.1)
+            ssd_param = so.SsdParameter(orig_tensor.shape, orig_tensor.dtype)
+            ssd_param.point_to_tensor(orig_copy)
+            ssd_param.set_file_params(f.name, 0)
+            ssd_param.to_file(release_tensor_after_write=True)
 
-            y1 = param + 3
-            # print(f"param {param.to_tensor()}")
-            print(f"y1 {y1}")
+            assert torch.equal(ssd_param.to_tensor(), orig_tensor)
+            optimizer_ssd = torch.optim.SGD([ssd_param], lr=0.1)
+            optimizer_orig = torch.optim.SGD([param], lr=0.1)
+
+            y1 = ssd_param + 1
             optimizer_ssd.zero_grad()
-            print(f"param {type(param)}")
             y1.sum().backward()
-            print(f"param.grad {param.grad}")
             optimizer_ssd.step()
-            print(f"param {param.to_tensor()}")
+
+            y2 = param + 1
+            optimizer_orig.zero_grad()
+            y2.sum().backward()
+            optimizer_orig.step()
+
+            # make sure we are using the file version not the cached tensor
+            ssd_param.point_to_file(f.name, 0)
+            print(f"ssd_param: {ssd_param.to_tensor()}")
+            print(f"param: {param}")
+            assert torch.equal(ssd_param.to_tensor(), param)
 
     @classmethod
     def _test_ssd_offload_eval(self, rank, group, config):
@@ -346,12 +367,14 @@ class TestSsdLoading(DistributedTest):
             y2.sum().backward()
             optimizer_orig.step()
 
+            # make sure we are using the file version not the cached tensor
+            ssd_handle.point_to_file(f.name, 0)
             print(f"ssd_handle: {ssd_handle.to_tensor()}")
-            print(f"orig: {orig_tensor}")
-            assert torch.equal(ssd_handle.to_tensor(), orig_tensor)
+            print(f"orig_copy: {orig_copy}")
+            assert torch.equal(ssd_handle.to_tensor(), orig_copy)
 
     @classmethod
-    def _test_ssd_offload_train(self, rank, group):
+    def _test_ssd_offload_train_fsdp(self, rank, group):
         SIZE = 16 * 16
 
         config = {}
