@@ -708,6 +708,9 @@ class FullyShardedDataParallel(nn.Module):
         part of the model. This call cannot be made when ssd_offload is set because
         parameter data will not be loaded.
         """
+        # TODO(anj): Use `copy_into_tensor` in order to provide a copy of the 
+        # parameters and not the actual parameters. Ideally we don't users to operate on 
+        # actual params.
         if self.ssd_offload and self.ssd_buffer.buffer is None:
             self.ssd_buffer.from_disk(self.buffer_size)
 
@@ -736,6 +739,9 @@ class FullyShardedDataParallel(nn.Module):
         If you want the full param to be returned, you should call this function
         under a `summon_full_params` context when using flattened or original params.
         """
+        # TODO(anj): Use `copy_into_tensor` in order to provide a copy of the 
+        # parameters and not the actual parameters. Ideally we don't users to operate on 
+        # actual params.
         if self.ssd_offload and self.ssd_buffer.buffer is None:
             self.ssd_buffer.from_disk(self.buffer_size)
 
