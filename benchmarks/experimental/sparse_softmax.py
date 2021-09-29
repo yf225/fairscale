@@ -25,6 +25,10 @@ from fairscale.utils.testing import get_smi_memory
 
 """ Benchmarking various softmax kernels. Some are dense and some are with label and top-K sparsity. """
 
+# TODO:
+#   From Naman: d_model varies between [2k, 12k]
+#               input: 8 * 2K = 16K
+#               vocab: 256K
 SHAPES = [
     # name, activation, FC weights
     ("1k_128h_256k", (1024, 128), (128, 256 * 1024)),
