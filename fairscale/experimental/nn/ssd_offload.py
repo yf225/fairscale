@@ -194,7 +194,7 @@ class SsdTensorHandle(torch.Tensor):
         self.tensor = None
 
     def point_to_tensor(self, tensor: torch.Tensor) -> None:
-        assert self.tensor is None
+        # assert self.tensor is None
         assert self._shape == tensor.shape
         assert self._dtype == tensor.dtype
         self.tensor = tensor
@@ -352,7 +352,6 @@ class SsdParameter(torch.nn.Parameter, SsdTensorHandle):
         r = SsdTensorHandle._make_wrapper_subclass(cls, shape, dtype=dtype, requires_grad=requires_grad)
 
         return r
-
 
     def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = True) -> None:
         super(SsdParameter, self).__init__(shape, dtype, requires_grad)

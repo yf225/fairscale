@@ -369,11 +369,6 @@ class FullyShardedDataParallel(nn.Module):
         self._num_flatten_params = len(self._fsdp_wrapped_module.flat_params)
         self._param_name_groups = param_name_groups
 
-        # for n, p in self.named_parameters():
-        #     if not hasattr(p, "_filename"):
-        #         p._filename = f"{randint(1, int(10E6))}_rank{self.rank}"  # type: ignore
-        #     p._num_padded = 0  # type: ignore
-
         # Shard module parameters in place
         self._shard_parameters_()
 
@@ -1116,7 +1111,7 @@ class FullyShardedDataParallel(nn.Module):
             )
             free_storage_(p._full_param_padded)
 
-        if self.move_grads_to_cpu and self.training:
+        if self.move_grads_to_cpu or self.ssd_offload:
             # We can optionally move the grad shard to CPU during the backward
             # pass. In this case, it's important to pre-allocate the CPU grad
             # shard in pinned memory so that we can do a non-blocking transfer.
@@ -1229,24 +1224,12 @@ class FullyShardedDataParallel(nn.Module):
 
         outputs = self.module(*args, **kwargs)
 
-        if self.reshard_after_forward or self.ssd_offload:
+        if self.reshard_after_forward:
             self._free_full_params()
             if self.mixed_precision:
                 self._free_fp16_param_shard()
 
-        if self.ssd_offload:
-            self.ssd_buffer.to_disk()
-            # Free storage of the fp32 shard
-            for p in self.params:
-                # TODO(anj): We need another function that enables us to drop the current
-                # tensors and not have to write to disk in the case of eval.
-                free_storage_(p._fp32_shard)
-                free_storage_(p.data)
-
-            # At the end of forward you should have ideally freed all memory. However
-            # you will be left with 2 tensors still allocated 1) full params
-            # 2) grads and this will depend on if you are setting reshard_after_forward
-            # and if you are training the model.
+        self._free_ssd_offload()
 
         # Switch to main FP32 param shard. We maintain this invariant throughout
         # the code, i.e., ``p.data == p._fp32_shard`` after each function. This
@@ -1275,6 +1258,22 @@ class FullyShardedDataParallel(nn.Module):
             torch.clear_autocast_cache()
 
         return outputs
+
+    @torch.no_grad()
+    def _free_ssd_offload(self):
+        if self.ssd_offload:
+            self.ssd_buffer.to_disk()
+            # Free storage of the fp32 shard
+            # for p in self.params:
+            #     # TODO(anj): We need another function that enables us to drop the current
+            #     # tensors and not have to write to disk in the case of eval.
+            #     free_storage_(p._fp32_shard)
+            #     free_storage_(p.data)
+
+            # At the end of forward you should have ideally freed all memory. However
+            # you will be left with 2 tensors still allocated 1) full params
+            # 2) grads and this will depend on if you are setting reshard_after_forward
+            # and if you are training the model.
 
     def _register_pre_backward_hooks(self, outputs: Any) -> Any:
         """Register pre-backward hook to run before the wrapped module's
@@ -1314,7 +1313,7 @@ class FullyShardedDataParallel(nn.Module):
             # Note, both ``self._rebuild_full_params`` and ``self._use_full_params`` are
             # idempotent.  So in case they are called unnecessarily, they don't incur much
             # overhead.
-            if self.reshard_after_forward or self.ssd_offload:
+            if self.ssd_offload or self.reshard_after_forward:
                 self._rebuild_full_params()
             else:
                 self._use_full_params()
@@ -1443,12 +1442,6 @@ class FullyShardedDataParallel(nn.Module):
         self._use_fp32_param_shard([param])
 
         if not self._require_backward_grad_sync:
-            if self.ssd_offload:
-                # we still need to update the params
-                self.ssd_buffer.to_disk()
-                # Free storage of the fp32 shard
-                for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                    p = handle
             return
 
         # Wait for all work in the current stream to finish, then start the
@@ -1493,10 +1486,6 @@ class FullyShardedDataParallel(nn.Module):
                 # case grads should be all-reduced here.
                 assert self.world_size == 1
                 self._post_reduction_hook(param, param.grad.data)
-
-            if self.ssd_offload:
-                for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                    p = handle
 
             # After _post_backward_hook returns, orig_grad_data will eventually
             # go out of scope, at which point it could otherwise be freed for
@@ -1598,7 +1587,7 @@ class FullyShardedDataParallel(nn.Module):
                     continue
 
                 # Parameter and gradient devices must match.
-                if hasattr(p, "_cpu_grad"):
+                if hasattr(p, "_cpu_grad") and not self.ssd_offload:
                     assert p.device == torch.device("cpu")
                     p.grad = p._cpu_grad
                 elif hasattr(p, "_saved_grad_shard"):
@@ -1618,11 +1607,10 @@ class FullyShardedDataParallel(nn.Module):
                     # the `requires_grad` field set. If `requires_grad=False` for
                     # all the params, the post_backward hook will not fire and the
                     # state will remain in `TrainingState.BACKWARD_PRE`.
-                    # if any([p.requires_grad for p in m.params]):
-                    #     m.assert_state(TrainingState.BACKWARD_POST)
-                    # else:
-                    #     m.assert_state(TrainingState.BACKWARD_PRE)
-                    pass
+                    if any([p.requires_grad for p in m.params]):
+                        m.assert_state(TrainingState.BACKWARD_POST)
+                    else:
+                        m.assert_state(TrainingState.BACKWARD_PRE)
                 else:
                     # When `m` and its children has no params or has params but
                     # none with `requires_grad==True`, there are two cases:

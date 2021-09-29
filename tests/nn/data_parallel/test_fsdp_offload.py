@@ -223,23 +223,10 @@ class SimpleLinear(nn.Module):
 
 class TestSsdLoading(DistributedTest):
     def test_ssd_offloading_train_simple_param(self):
-        # Uncomment the following lines once training works.
-        # By not spawning it is easier to gdb into the stack.
         test_fn = functools.partial(self._test_ssd_offload_train_simple_param)
         spawn_and_init(test_fn)
-        """
-        import tempfile
-
-        test_fn = functools.partial(self._test_ssd_offload_train_simple_param)
-        dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
-        group = torch.distributed.new_group()
-        test_fn(0, group)
-        """
 
     def test_ssd_offloading_train_fsdp(self):
-        self.skipTest(
-            "Fix error:  RuntimeError: Expected all tensors to be on the same device, but found at least two devices, meta and cpu!"
-        )
         # Uncomment the following lines once training works.
         # By not spawning it is easier to gdb into the stack.
         # test_fn = functools.partial(self._test_ssd_offload_train_fsdp)
@@ -252,18 +239,8 @@ class TestSsdLoading(DistributedTest):
         test_fn(0, group)
 
     def test_ssd_offloading_train_simple(self):
-        # Uncomment the following lines once training works.
-        # By not spawning it is easier to gdb into the stack.
         test_fn = functools.partial(self._test_ssd_offload_train_simple)
         spawn_and_init(test_fn)
-
-        """
-        import tempfile
-
-        dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
-        group = torch.distributed.new_group()
-        test_fn(0, group)
-        """
 
     @parameterized.expand(CONFIG_OPTIONS, name_func=rename_test)
     def test_ssd_offloading_eval(self, config):
@@ -306,8 +283,6 @@ class TestSsdLoading(DistributedTest):
 
             # make sure we are using the file version not the cached tensor
             ssd_param.point_to_file(f.name, 0)
-            print(f"ssd_param: {ssd_param.to_tensor()}")
-            print(f"param: {param}")
             assert torch.equal(ssd_param.to_tensor(), param)
 
     @classmethod
@@ -384,7 +359,7 @@ class TestSsdLoading(DistributedTest):
         if not config["ssd_offload"]:
             model = model.cuda()
         model_device = torch.device("cuda")
-        optim = torch.optim.SGD(model.ssd_buffer.get_tensors(), lr=0.01, momentum=0.9)
+        optim = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
         optim.zero_grad()
         # Inputs always cuda regardless of move_grads_cpu, or model.device
         input = model.get_input(torch.device("cuda"))
@@ -393,10 +368,10 @@ class TestSsdLoading(DistributedTest):
         assert loss.dtype == torch.float32
 
         model.module.run_backward(loss)
-        params = [p for p in model.parameters()]
-        for handle, param in zip(model.ssd_buffer.get_tensors(), params):
-            handle.grad = param.grad
-            handle.requires_grad = param.requires_grad
+        # params = [p for p in model.parameters()]
+        # for handle, param in zip(model.ssd_buffer.get_tensors(), params):
+        #     handle.grad = param.grad
+        #     handle.requires_grad = param.requires_grad
 
         optim.step()
         if isinstance(model, FullyShardedDataParallel):
