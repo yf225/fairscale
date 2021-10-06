@@ -261,10 +261,8 @@ class SsdTensorHandle(torch.Tensor):
 
 # Class supporting a single SSD file backing one or more tensors
 class SsdBuffer:
-    def __init__(self, num_elems: int, filename: str) -> None:
-        # TODO(anj): add an option of passing the dtype of the buffer
-        # we want to track.
-        self.buffer: Optional[torch.Tensor] = torch.empty((num_elems,))
+    def __init__(self, num_elems: int, filename: str, dtype: torch.dtype=torch.float32) -> None:
+        self.buffer: Optional[torch.Tensor] = torch.empty((num_elems,), dtype=dtype)
         self.filename = filename
         self.offset = 0
         self.tensors: Dict[int, SsdTensorHandle] = {}
@@ -314,19 +312,15 @@ class SsdBuffer:
         # this reference up.
         self.buffer = torch.empty((1))
 
-    def from_disk(self, num_elems: int) -> None:
+    def from_disk(self, num_elems: int, dtype: torch.dtype=torch.float32) -> None:
         if num_elems < self.offset:
             raise RuntimeError(
                 f"Attempted to load from file ssdbuffer of size: {self.offset} into a buffer that is of size: {num_elems}"
             )
-        self.buffer = torch.empty((num_elems,))
+        self.buffer = torch.empty((num_elems,), dtype=dtype)
         valid_data = self.buffer.narrow(0, 0, self.offset)
         read(valid_data, self.filename)
 
-        # Restore Tensor References
-        # We are book-keeping the offset in two places -
-        # both in the SSDTensorHandle and the SSD buffer.
-        # TODO(anj): Do we need to do this twice?
         for offset, t in self.tensors.items():
             t.point_to_tensor(self.buffer.narrow(0, t.offset, t._numel))
 

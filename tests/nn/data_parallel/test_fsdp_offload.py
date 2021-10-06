@@ -104,7 +104,7 @@ class DistributedTest(unittest.TestCase):
         return model
 
     @classmethod
-    def _test_identical_outputs(
+    def _test_identical_outputs_eval(
         cls, model_init_fn, config, rank, group, num_steps=2, use_cuda=True, lr=0.01, ref_ddp_fn=None,
     ):
         if config.get("mixed_precision", False):
@@ -165,7 +165,7 @@ class TestSsdMemory(DistributedTest):
     @classmethod
     def _test_memory_benchmark(self, rank, group, config):
 
-        SIZE = 16 * 16
+        SIZE = 8 * 8
         tk.print_time("START", 1.0)
         a = torch.empty(1)
         b = a.cuda()
@@ -250,7 +250,7 @@ class TestSsdLoading(DistributedTest):
     @parameterized.expand(CONFIG_OPTIONS, name_func=rename_test)
     def test_transformer_parameterized(self, config):
         # Test every combination of these options:
-        spawn_and_init(functools.partial(self._test_identical_outputs, TransformerWithSharedParams, config))
+        spawn_and_init(functools.partial(self._test_identical_outputs_eval, TransformerWithSharedParams, config))
 
     @classmethod
     def _test_ssd_offload_train_simple_param(self, rank, group):
@@ -304,6 +304,7 @@ class TestSsdLoading(DistributedTest):
 
         # With SSD offload only local_state_dict will work. We can support global
         # state dict if we think it is necessary.
+        # TODO(anj): Fix error with SSD offload
         # state_dict = model.local_state_dict()
         # model.load_local_state_dict(state_dict)
 
@@ -368,10 +369,6 @@ class TestSsdLoading(DistributedTest):
         assert loss.dtype == torch.float32
 
         model.module.run_backward(loss)
-        # params = [p for p in model.parameters()]
-        # for handle, param in zip(model.ssd_buffer.get_tensors(), params):
-        #     handle.grad = param.grad
-        #     handle.requires_grad = param.requires_grad
 
         optim.step()
         if isinstance(model, FullyShardedDataParallel):
