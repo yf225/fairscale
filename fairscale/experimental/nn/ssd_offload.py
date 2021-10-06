@@ -261,7 +261,7 @@ class SsdTensorHandle(torch.Tensor):
 
 # Class supporting a single SSD file backing one or more tensors
 class SsdBuffer:
-    def __init__(self, num_elems: int, filename: str, dtype: torch.dtype=torch.float32) -> None:
+    def __init__(self, num_elems: int, filename: str, dtype: torch.dtype = torch.float32) -> None:
         self.buffer: Optional[torch.Tensor] = torch.empty((num_elems,), dtype=dtype)
         self.filename = filename
         self.offset = 0
@@ -312,7 +312,7 @@ class SsdBuffer:
         # this reference up.
         self.buffer = torch.empty((1))
 
-    def from_disk(self, num_elems: int, dtype: torch.dtype=torch.float32) -> None:
+    def from_disk(self, num_elems: int, dtype: torch.dtype = torch.float32) -> None:
         if num_elems < self.offset:
             raise RuntimeError(
                 f"Attempted to load from file ssdbuffer of size: {self.offset} into a buffer that is of size: {num_elems}"

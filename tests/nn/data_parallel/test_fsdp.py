@@ -66,6 +66,7 @@ class DistributedTest(unittest.TestCase):
                     model.clip_grad_norm_(clip_norm, norm_type)
                 else:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), clip_norm, norm_type)
+
             optim.step()
         if isinstance(model, FullyShardedDataParallel):
             model.assert_state(TrainingState.IDLE)

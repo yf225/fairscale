@@ -179,7 +179,7 @@ class TestSsdMemory(DistributedTest):
         model = FullyShardedDataParallel(model, **config)
         tk.print_time("FSDP_MODEL", 1.0)
 
-        self._eval_for_several_steps(model, 4, autocast=False)
+        self._eval_for_several_steps(model, 1, autocast=False)
         tk.print_time("TRAIN_1")
 
         fileList = glob.glob(os.getcwd() + "/*_rank*")
@@ -229,14 +229,14 @@ class TestSsdLoading(DistributedTest):
     def test_ssd_offloading_train_fsdp(self):
         # Uncomment the following lines once training works.
         # By not spawning it is easier to gdb into the stack.
-        # test_fn = functools.partial(self._test_ssd_offload_train_fsdp)
-        # spawn_and_init(test_fn)
-        import tempfile
-
         test_fn = functools.partial(self._test_ssd_offload_train_fsdp)
-        dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
-        group = torch.distributed.new_group()
-        test_fn(0, group)
+        spawn_and_init(test_fn)
+        # import tempfile
+
+        # test_fn = functools.partial(self._test_ssd_offload_train_fsdp)
+        # dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
+        # group = torch.distributed.new_group()
+        # test_fn(0, group)
 
     def test_ssd_offloading_train_simple(self):
         test_fn = functools.partial(self._test_ssd_offload_train_simple)
@@ -354,13 +354,13 @@ class TestSsdLoading(DistributedTest):
         SIZE = 16 * 16
 
         config = {}
-        config["ssd_offload"] = True
+        config["ssd_offload"] = False
         config["mixed_precision"] = False
         model = FullyShardedDataParallel(SimpleLinear(group, input_size=SIZE, output_size=SIZE, layers=4), **config)
         if not config["ssd_offload"]:
             model = model.cuda()
         model_device = torch.device("cuda")
-        optim = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+        optim = torch.optim.SGD(model.parameters(), lr=4, momentum=0.9)
         optim.zero_grad()
         # Inputs always cuda regardless of move_grads_cpu, or model.device
         input = model.get_input(torch.device("cuda"))
@@ -370,7 +370,11 @@ class TestSsdLoading(DistributedTest):
 
         model.module.run_backward(loss)
 
+        print(f"param before {[p for p in model.parameters()]}")
+        print(f"grad before {[p.grad for p in model.parameters()]}")
         optim.step()
+        print(f"param after {[p for p in model.parameters()]}")
+
         if isinstance(model, FullyShardedDataParallel):
             model.assert_state(TrainingState.IDLE)
 
