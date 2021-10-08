@@ -8,6 +8,7 @@ from typing import List
 from .offload import OffloadModel
 from .sparse_softmax import (
     BaselineSoftmax,
+    BaselineSoftmaxNllLoss,
     InplaceSoftmax,
     TiledSoftmax,
     TopKFaissSoftmax,

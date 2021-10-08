@@ -65,6 +65,32 @@ class BaselineSoftmax(nn.Module):
         return x
 
 
+class BaselineSoftmaxNllLoss(BaselineSoftmax):
+    """ Baseline that does an output projection, a softmax NLL loss. """
+
+    def __init__(
+        self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 0, log: bool = True
+    ):  # k, tile_factor are ignored.
+        super().__init__(proj_weight, k, tile_factor, log)
+
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        assert kwargs == {}
+        input, target = input
+        assert isinstance(input, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        if self.fp16:
+            assert input.dtype == torch.float16
+        x = self.fc(input)
+        if self.log:
+            x = F.log_softmax(x, dim=-1, dtype=torch.float32)
+        else:
+            x = F.softmax(x, dim=-1, dtype=torch.float32)
+        assert x.dtype == torch.float32
+        x = F.nll_loss(x, target)
+        x = x.mean()
+        return x
+
+
 class TritonSoftmax(BaselineSoftmax):
     """ Softmax that uses xformers' softmax. """
 
@@ -141,7 +167,7 @@ class TiledSoftmax(nn.Module):
             assert input.dtype == torch.float16
         tokens, _ = input.shape
         with torch.no_grad():
-            out = torch.empty(tokens, self.fc.weight.shape[0])
+            out = torch.empty(tokens, self.fc.weight.shape[0], dtype=input.dtype, device=input.device)
             for x, y in zip(
                 torch.split(input, tokens // self.tile_factor, 0), torch.split(out, tokens // self.tile_factor, 0)
             ):

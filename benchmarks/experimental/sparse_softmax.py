@@ -13,6 +13,7 @@ from torch.cuda import Event
 
 from fairscale.experimental.nn import (  # noqa: F401
     BaselineSoftmax,
+    BaselineSoftmaxNllLoss,
     InplaceSoftmax,
     TiledSoftmax,
     TopKFaissSoftmax,
@@ -36,13 +37,14 @@ SHAPES = [
     # ("8k_4k_32k", (4 * 2048, 4 * 1024), (4 * 1024, 32 * 1024)),
     ("24k_4k_50k", (12 * 2048, 4 * 1024), (4 * 1024, 50 * 1024)),
     # ("8k_4k_256k", (4 * 2048, 4 * 1024), (4 * 1024, 256 * 1024)),
-    ("8k_4k_256008", (4 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
+    # ("8k_4k_256008", (4 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
 ]
 KERNELS = [
     BaselineSoftmax,
+    BaselineSoftmaxNllLoss,
     #    TritonSoftmax,
     #    InplaceSoftmax,
-    TiledSoftmax,
+    # TiledSoftmax,
     #    TopKSoftmax,
     # TopKTiledSoftmax,
     #    TopKFaissSoftmax,
@@ -85,7 +87,10 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
             events[i].record()
             out = k(input, target)
             if fwd_bwd:
-                my_nll_loss(out, target).backward()
+                if kernel not in [BaselineSoftmaxNllLoss]:
+                    my_nll_loss(out, target).backward()
+                else:
+                    out.backward()
             del out
     # Cpu is done
     cpu_time = time.time() - cpu_start_time
