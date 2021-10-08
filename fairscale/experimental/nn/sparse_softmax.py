@@ -197,7 +197,7 @@ class TopKTiledSoftmax(nn.Module):
         The tiling is done on the `out_dim` of the FC weight tensor.
     """
 
-    def __init__(self, proj_weight: torch.nn.Parameter, k: int, tile_factor: int = 16):
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int, tile_factor: int = 16, log: bool = True):
         super().__init__()
         out_dim, in_dim = proj_weight.shape
         self.vocabs = out_dim
@@ -210,6 +210,7 @@ class TopKTiledSoftmax(nn.Module):
         self.weight = proj_weight.T
         assert self.weight.dtype in [torch.float16, torch.float32]
         self.fp16 = self.weight.dtype == torch.float16
+        self.log = log
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
@@ -251,7 +252,10 @@ class TopKTiledSoftmax(nn.Module):
         # Softmax (assuming fill value is -inf) and return the dense result
         if self.fp16:
             result = result.float()
-        return torch.sparse.softmax(result, dim=1).to_dense()
+        if self.log:
+            return torch.sparse.log_softmax(result, dim=1).to_dense()
+        else:
+            return torch.sparse.softmax(result, dim=1).to_dense()
 
 
 _res = None
