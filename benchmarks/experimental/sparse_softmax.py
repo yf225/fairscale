@@ -91,7 +91,6 @@ def run_on_gpu(kernel, data, repeats, no_grad):
     input, weight.data, target = input.cpu(), weight.data.cpu(), target.cpu()
     weight.grad = None
     cur_mem_after = round(torch.cuda.memory_allocated() / 1024 / 1024)
-    dump_all_tensors(rank=0)
     assert cur_mem_after == 0, cur_mem_after
 
     # Get peak mem
