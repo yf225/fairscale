@@ -24,14 +24,14 @@ except ImportError:
 
 
 def get_data(
-    shape: Tuple[Tuple[int, int], Tuple[int, int]], dtype: torch.dtype = torch.float16
+    shape: Tuple[Tuple[int, int], Tuple[int, int]], dtype: torch.dtype = torch.float16, device: str = "cuda"
 ) -> Tuple[torch.Tensor, torch.nn.Parameter, torch.Tensor]:
     """ Utility function for getting some tensors for testing and benchmarking."""
     (tokens, d1), (d2, vocabs) = shape
     assert d1 == d2
-    input = torch.rand(tokens, d1, device="cuda", dtype=dtype)
-    weight = nn.Linear(d2, vocabs, bias=False, device="cuda", dtype=dtype).weight
-    target = (torch.rand(tokens, device="cuda") * vocabs).long()
+    input = torch.rand(tokens, d1, device=device, dtype=dtype)
+    weight = nn.Linear(d2, vocabs, bias=False, device=device, dtype=dtype).weight
+    target = (torch.rand(tokens, device=device) * vocabs).long()
     return input, weight, target
 
 
