@@ -38,13 +38,14 @@ def get_data(
 class BaselineSoftmax(nn.Module):
     """ Baseline softmax that does an output projection and a softmax. """
 
-    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0):  # k is ignored.
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, log: bool = True):  # k is ignored.
         super().__init__()
         out_dim, in_dim = proj_weight.shape
         self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda", dtype=proj_weight.dtype)
         self.fc.weight = proj_weight
         assert self.fc.weight.dtype in [torch.float16, torch.float32], self.fc.weight.dtype
         self.fp16 = self.fc.weight.dtype == torch.float16
+        self.log = log
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
@@ -54,10 +55,10 @@ class BaselineSoftmax(nn.Module):
         if self.fp16:
             assert input.dtype == torch.float16
         x = self.fc(input)
-        if self.fp16:
-            assert x.dtype == torch.float16
-            x = x.float()
-        x = F.softmax(x, dim=-1)
+        if self.log:
+            x = F.log_softmax(x, dim=-1, dtype=torch.float32)
+        else:
+            x = F.softmax(x, dim=-1, dtype=torch.float32)
         assert x.dtype == torch.float32
         return x
 
@@ -251,11 +252,13 @@ class TopKTiledSoftmax(nn.Module):
 
         # Softmax (assuming fill value is -inf) and return the dense result
         if self.fp16:
-            result = result.float()
+            result = result.float()  # passing dtype=torch.float32 only works on CPU, not cuda.
         if self.log:
-            return torch.sparse.log_softmax(result, dim=1).to_dense()
+            x = torch.sparse.log_softmax(result, dim=1).to_dense()
         else:
-            return torch.sparse.softmax(result, dim=1).to_dense()
+            x = torch.sparse.softmax(result, dim=1).to_dense()
+        assert x.dtype == torch.float32
+        return x
 
 
 _res = None
