@@ -32,8 +32,8 @@ from fairscale.utils.testing import get_smi_memory
 SHAPES = [
     # name, activation, FC weights
     ("1k_128h_256k", (1024, 128), (128, 256 * 1024)),
-    # ("4k_128h_256k", (4096, 128), (128, 256 * 1024)),
-    # ("8k_4k_256k", (4*2048, 4*1024), (4*1024, 256 * 1024)),
+    ("4k_128h_256k", (4096, 128), (128, 256 * 1024)),
+    ("8k_4k_256k", (4 * 2048, 4 * 1024), (4 * 1024, 256 * 1024)),
     # ("8k_4k_256k", (4*2048, 4*1024), (4*1024, 256008)),
 ]
 KERNELS = [
@@ -45,6 +45,13 @@ KERNELS = [
     TopKTiledSoftmax,
     #    TopKFaissSoftmax,
 ]
+
+
+def my_nll_loss(lprobs, target):
+    """ Like that in fairseq, when lprobs.numel > 2r9, it uses a loss like this. """
+    target = target.unsqueeze(-1)
+    nll_loss = -lprobs.gather(dim=-1, index=target)
+    return nll_loss.mean()
 
 
 def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
@@ -76,7 +83,7 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
             events[i].record()
             out = k(input, target)
             if fwd_bwd:
-                out.sum().backward()
+                my_nll_loss(out, target).backward()
             del out
     # Cpu is done
     cpu_time = time.time() - cpu_start_time
