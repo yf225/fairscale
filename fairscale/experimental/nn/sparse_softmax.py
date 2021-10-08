@@ -38,7 +38,9 @@ def get_data(
 class BaselineSoftmax(nn.Module):
     """ Baseline softmax that does an output projection and a softmax. """
 
-    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, log: bool = True):  # k is ignored.
+    def __init__(
+        self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 0, log: bool = True
+    ):  # k, tile_factor are ignored.
         super().__init__()
         out_dim, in_dim = proj_weight.shape
         self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda", dtype=proj_weight.dtype)
