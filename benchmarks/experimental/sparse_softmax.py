@@ -32,7 +32,7 @@ from fairscale.utils.testing import get_smi_memory
 SHAPES = [
     # name, activation, FC weights
     ("1k_128h_256k", (1024, 128), (128, 256 * 1024)),
-    ("4k_128h_256k", (4096, 128), (128, 256 * 1024)),
+    # ("4k_128h_256k", (4096, 128), (128, 256 * 1024)),
     # ("8k_4k_256k", (4*2048, 4*1024), (4*1024, 256 * 1024)),
     # ("8k_4k_256k", (4*2048, 4*1024), (4*1024, 256008)),
 ]
@@ -40,14 +40,14 @@ KERNELS = [
     BaselineSoftmax,
     #    TritonSoftmax,
     #    InplaceSoftmax,
-    TiledSoftmax,
+    # TiledSoftmax,
     #    TopKSoftmax,
     TopKTiledSoftmax,
     #    TopKFaissSoftmax,
 ]
 
 
-def run_on_gpu(kernel, data, repeats, no_grad):
+def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
     input, weight, target = data
 
     # Ensure GPU memory is minimal and get_smi_memory is good
@@ -75,6 +75,8 @@ def run_on_gpu(kernel, data, repeats, no_grad):
         with context:
             events[i].record()
             out = k(input, target)
+            if fwd_bwd:
+                out.sum().backward()
             del out
     # Cpu is done
     cpu_time = time.time() - cpu_start_time
@@ -107,6 +109,7 @@ def main():
 
     parser.add_argument("--dtype", type=str, choices=["fp16", "fp32"], default="fp16")
     parser.add_argument("--grad", type=str, choices=["grad", "no_grad"], default="grad")
+    parser.add_argument("--fwd_bwd", action="store_true", default=False)
     args = parser.parse_args()
 
     repeats = 9
@@ -125,7 +128,7 @@ def main():
             k_name = kernel.__name__
             no_grad = args.grad
             print(f"Running {k_name} with {name} {dtype} {no_grad} data")
-            peak_mem, smi_peak_mem, durations = run_on_gpu(kernel, data, repeats, no_grad == "no_grad")
+            peak_mem, smi_peak_mem, durations = run_on_gpu(kernel, data, repeats, no_grad == "no_grad", args.fwd_bwd)
             results["peak cached"][name][k_name] = peak_mem
             results["peak smi"][name][k_name] = smi_peak_mem
             results["durations"][name][k_name] = durations
