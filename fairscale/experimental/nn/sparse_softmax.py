@@ -228,7 +228,9 @@ class TopKTiledSoftmax(nn.Module):
             # Get matmul output.
             x = fc(input)
             # Get the top-K value and index.
-            D, I = torch.topk(x, self.k)
+            D, I = torch.topk(
+                x, min(self.k, x.shape[-1])
+            )  # some tiles (esp. last tile) may have small output dim < self.k
             val.append(D)
             idx.append(I + base)
             base += fc.weight.shape[0]
@@ -237,17 +239,20 @@ class TopKTiledSoftmax(nn.Module):
         idx = torch.cat(idx, dim=-1)
         val, I = torch.topk(val, self.k)
         idx = torch.gather(idx, 1, I)
-        # Make a sparse tensor.
+
+        # Make a sparse tensor from the top-k results.
         j = torch.arange(idx.shape[0], device=idx.device).expand(idx.shape[1], idx.shape[0]).T
         idx = torch.cat([j.reshape(1, -1), idx.reshape(1, -1)])
         result = torch.sparse_coo_tensor(idx, val.reshape(-1), (tokens, self.vocabs))
 
-        # Add in the targets to top-K results.
+        # Make another sparse tensor from the targets.
         w = torch.gather(self.weight, 1, target.expand(self.weight.shape[0], target.shape[0]))
         val = (input * w.T).sum(dim=1)
         j = torch.arange(target.shape[0], device=target.device).expand(1, target.shape[0]).T
         idx = torch.cat([j.reshape(1, -1), target.reshape(1, -1)])
         result_target = torch.sparse_coo_tensor(idx, val.reshape(-1), (tokens, self.vocabs))
+
+        # Add in the targets to top-K results.
         result += result_target
 
         # Softmax (assuming fill value is -inf) and return the dense result

@@ -120,6 +120,22 @@ def test_topk_tiled(input_data):
 
 
 @skip_if_no_cuda
+def test_topk_tiled_uneven():
+    print()
+    shape = ((4, 3), (3, 5))
+    input, weight, target = get_data(shape, dtype=torch.float16)
+    weight.grad = None
+    sm = TopKTiledSoftmax(weight, k=2, tile_factor=2)
+    out = sm(input, target)
+    print("kernel output", out)
+    assert out.shape == (4, 5)
+    loss = nn.CrossEntropyLoss()
+    loss(out, target).backward()
+    assert weight.grad.shape == weight.data.shape
+    print("grad", weight.grad)
+
+
+@skip_if_no_cuda
 def test_topk_faiss(input_data):
     pytest.skip("skip TopKFaissSoftmax until it is actually used")
     input, weight, target = input_data
