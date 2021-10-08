@@ -27,12 +27,14 @@ from fairscale.utils.testing import get_smi_memory
 
 # TODO:
 #   From Naman: d_model varies between [2k, 12k]
-#               input: 8 * 2K = 16K
+#               input: 8 * 2K = 16K -- 2K is seq len, 8 is batch size
 #               vocab: 256K
 SHAPES = [
     # name, activation, FC weights
     ("1k_128h_256k", (1024, 128), (128, 256 * 1024)),
     ("4k_128h_256k", (4096, 128), (128, 256 * 1024)),
+    # ("8k_4k_256k", (4*2048, 4*1024), (4*1024, 256 * 1024)),
+    # ("8k_4k_256k", (4*2048, 4*1024), (4*1024, 256008)),
 ]
 KERNELS = [
     BaselineSoftmax,
@@ -49,10 +51,14 @@ def run_on_gpu(kernel, data, repeats, no_grad):
     input, weight, target = data
 
     # Ensure GPU memory is minimal and get_smi_memory is good
-    cur_mem_before = round(torch.cuda.memory_allocated() / 1024 / 1024)
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
+    cur_mem_before = round(torch.cuda.memory_allocated() / 1024 / 1024)
     smi_mem_before = get_smi_memory()
+    assert cur_mem_before == 0, cur_mem_before
+
+    # Move tensors to GPU.
+    input, weight.data, target = input.cuda(), weight.data.cuda(), target.cuda()
 
     # Create the kernel
     k = kernel(weight, 200)
@@ -68,7 +74,8 @@ def run_on_gpu(kernel, data, repeats, no_grad):
             context = torch.no_grad()
         with context:
             events[i].record()
-            k(input, target)
+            out = k(input, target)
+            del out
     # Cpu is done
     cpu_time = time.time() - cpu_start_time
     # Might wait for gpu here
@@ -79,14 +86,21 @@ def run_on_gpu(kernel, data, repeats, no_grad):
     for x, y in zip(events, events[1:]):
         durations.append(x.elapsed_time(y))
 
-    # Get peak mem
+    # Free memory
+    del k
+    input, weight.data, target = input.cpu(), weight.data.cpu(), target.cpu()
+    weight.grad = None
     cur_mem_after = round(torch.cuda.memory_allocated() / 1024 / 1024)
-    peak_mem_after = round(torch.cuda.max_memory_allocated() / 1024 / 1024)
-    assert cur_mem_after == cur_mem_before, "torch GPU memory was leaked by the kernel"
-    smi_mem_after = get_smi_memory()
-    peak_mem = max(peak_mem_after - cur_mem_before, smi_mem_after - smi_mem_before)
+    dump_all_tensors(rank=0)
+    assert cur_mem_after == 0, cur_mem_after
 
-    return peak_mem, durations
+    # Get peak mem
+    peak_mem_after = round(torch.cuda.max_memory_allocated() / 1024 / 1024)
+    smi_mem_after = get_smi_memory()
+    peak_mem = peak_mem_after - cur_mem_before
+    smi_peak_mem = smi_mem_after - smi_mem_before
+
+    return peak_mem, smi_peak_mem, durations
 
 
 def main():
@@ -98,20 +112,23 @@ def main():
 
     repeats = 9
     results = {}
-    results["peak_mem"] = {}
+    results["peak cached"] = {}
+    results["peak smi"] = {}
     results["durations"] = {}
     for shape in SHAPES:
         name = shape[0]
-        results["peak_mem"][name] = {}
+        results["peak cached"][name] = {}
+        results["peak smi"][name] = {}
         results["durations"][name] = {}
         dtype = torch.float32 if args.dtype == "fp32" else torch.float16
-        data = get_data(shape[1:], dtype)
+        data = get_data(shape[1:], dtype, "cpu")  # Use cpu memory to ensure we always start with empty GPU
         for kernel in KERNELS:
             k_name = kernel.__name__
             no_grad = args.grad
             print(f"Running {k_name} with {name} {dtype} {no_grad} data")
-            peak_mem, durations = run_on_gpu(kernel, data, repeats, no_grad == "no_grad")
-            results["peak_mem"][name][k_name] = peak_mem
+            peak_mem, smi_peak_mem, durations = run_on_gpu(kernel, data, repeats, no_grad == "no_grad")
+            results["peak cached"][name][k_name] = peak_mem
+            results["peak smi"][name][k_name] = smi_peak_mem
             results["durations"][name][k_name] = durations
     pprint(results)
 
