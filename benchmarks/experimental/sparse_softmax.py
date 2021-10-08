@@ -34,16 +34,15 @@ SHAPES = [
     # ("1k_128h_256k", (1024, 128), (128, 256 * 1024)),
     # ("4k_128h_256k", (4096, 128), (128, 256 * 1024)),
     # ("8k_4k_32k", (4 * 2048, 4 * 1024), (4 * 1024, 32 * 1024)),
-    # ("8k_4k_50k", (4 * 2048, 4 * 1024), (4 * 1024, 50 * 1024)),
+    ("24k_4k_50k", (12 * 2048, 4 * 1024), (4 * 1024, 50 * 1024)),
     # ("8k_4k_256k", (4 * 2048, 4 * 1024), (4 * 1024, 256 * 1024)),
-    # ("8k_4k_256008", (4 * 2448, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
-    ("2k_4k_256008", (1 * 128, 4 * 1024), (4 * 1024, 256008)),
+    ("8k_4k_256008", (4 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
 ]
 KERNELS = [
     BaselineSoftmax,
     #    TritonSoftmax,
     #    InplaceSoftmax,
-    # TiledSoftmax,
+    TiledSoftmax,
     #    TopKSoftmax,
     # TopKTiledSoftmax,
     #    TopKFaissSoftmax,
@@ -71,7 +70,7 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
     input, weight.data, target = input.cuda(), weight.data.cuda(), target.cuda()
 
     # Create the kernel
-    k = kernel(weight, k=200, tile_factor=16)
+    k = kernel(weight, k=200, tile_factor=60)
 
     # Get the events
     events = [Event(enable_timing=True) for _ in range(repeats)]

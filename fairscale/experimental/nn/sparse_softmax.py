@@ -112,22 +112,17 @@ class InplaceSoftmax(nn.Module):
 
 
 class TiledSoftmax(nn.Module):
-    """ Memory saving softmax that does the softmax in a tiled fashion.
-
-        This should be use a little over half of the memory of the BaselineSoftmax above,
-        depending on the tile_factor argument. The tiling is done on the `tokens` dimension
-        of the input tensor.
+    """ Memory saving softmax that does the softmax in a micro-batched fashion.
 
         Peak memory is saved only when torch.no_grad is used. Which means this
         needs activation checkpointing during training.
 
-        It is likely *NOT* useful since softmax is at the end of the
-        forward pass and even after checkpointing, immediately, backward
-        pass will trigger a mini-forward pass that with torch.grad(), which
-        will again consume lots of memory.
+        A custom backward is used to recompute the grad also in this micro-batched fashion.
     """
 
-    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 16):  # k is ignored
+    def __init__(
+        self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 16, log: bool = True
+    ):  # k is ignored
         super().__init__()
         out_dim, in_dim = proj_weight.shape
         self.fc = nn.Linear(in_dim, out_dim, bias=False, device="cuda", dtype=proj_weight.dtype)
@@ -135,6 +130,7 @@ class TiledSoftmax(nn.Module):
         assert self.fc.weight.dtype in [torch.float16, torch.float32]
         self.fp16 = self.fc.weight.dtype == torch.float16
         self.tile_factor = tile_factor
+        self.log = log
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
@@ -144,15 +140,18 @@ class TiledSoftmax(nn.Module):
         if self.fp16:
             assert input.dtype == torch.float16
         tokens, _ = input.shape
-        out = []
-        for i in torch.split(input, tokens // self.tile_factor, 0):
-            x = self.fc(i)
-            if self.fp16:
-                assert x.dtype == torch.float16
-                x = x.float()
-            x = F.softmax(x, dim=-1)
-            assert x.dtype == torch.float32
-            out.append(x)
+        with torch.no_grad():
+            out = torch.empty(tokens, self.fc.weight.shape[0])
+            for x, y in zip(
+                torch.split(input, tokens // self.tile_factor, 0), torch.split(out, tokens // self.tile_factor, 0)
+            ):
+                x = self.fc(x)
+                if self.log:
+                    x = F.log_softmax(x, dim=-1, dtype=torch.float32)
+                else:
+                    x = F.softmax(x, dim=-1, dtype=torch.float32)
+                assert x.dtype == torch.float32
+                y.copy_(x)
         # Do not use torch.cat(out, dim=0), which would double the memory.
         return out
 
