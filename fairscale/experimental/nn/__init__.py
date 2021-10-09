@@ -6,7 +6,7 @@
 from typing import List
 
 from .offload import OffloadModel
-from .sparse_softmax import (
+from .sparse_softmax import (  # dense; sparse
     BaselineSoftmax,
     BaselineSoftmaxNllLoss,
     InplaceSoftmax,
@@ -14,6 +14,7 @@ from .sparse_softmax import (
     TopKFaissSoftmax,
     TopKSoftmax,
     TopKTiledSoftmax,
+    TritonFuseAll,
     TritonSoftmax,
 )
 from .sync_batchnorm import SyncBatchNorm

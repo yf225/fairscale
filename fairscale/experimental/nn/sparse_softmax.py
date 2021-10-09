@@ -10,6 +10,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from .triton import fused_forward  # type: ignore
+
 try:
     import faiss
     import faiss.contrib.torch_utils  # noqa: F401, actually used just by importing
@@ -94,7 +96,7 @@ class BaselineSoftmaxNllLoss(BaselineSoftmax):
 class TritonSoftmax(BaselineSoftmax):
     """ Softmax that uses xformers' softmax. """
 
-    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0):  # k is ignored.
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 0):  # k, tile_factor is ignored.
         super().__init__(proj_weight)
         assert triton_softmax is not None, "Need to import xformers"
         assert proj_weight.dtype == torch.float32, "fp16 not yet supported"
@@ -110,6 +112,21 @@ class TritonSoftmax(BaselineSoftmax):
         assert x.shape[0] % div == 0
         x = triton_softmax(x.reshape(-1, div, x.shape[1]))
         return x.reshape(orig_shape)
+
+
+class TritonFuseAll(nn.Module):
+    """ Triton fuse fc + softmax + nll_loss. """
+
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 0):  # k, tile_factor is ignored.
+        super().__init__()
+        self.weight = proj_weight
+
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        assert kwargs == {}
+        input, target = input
+        assert isinstance(input, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        return fused_forward(input, self.weight.data, target)
 
 
 class InplaceSoftmax(nn.Module):

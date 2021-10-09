@@ -19,6 +19,7 @@ from fairscale.experimental.nn import (  # noqa: F401
     TopKFaissSoftmax,
     TopKSoftmax,
     TopKTiledSoftmax,
+    TritonFuseAll,
     TritonSoftmax,
 )
 from fairscale.experimental.nn.sparse_softmax import get_data
@@ -40,8 +41,9 @@ SHAPES = [
     # ("8k_4k_256008", (4 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
 ]
 KERNELS = [
-    BaselineSoftmax,
+    # BaselineSoftmax,
     BaselineSoftmaxNllLoss,
+    TritonFuseAll,
     #    TritonSoftmax,
     #    InplaceSoftmax,
     # TiledSoftmax,
