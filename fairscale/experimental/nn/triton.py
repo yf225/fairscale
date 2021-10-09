@@ -13,7 +13,11 @@ BLOCK_SIZE_DMODEL = 32
 
 @triton.autotune(
     configs=[
-        triton.Config({"BLOCK_SIZE_TOK": 16, "BLOCK_SIZE_VOC": 16, "BLOCK_SIZE_DMODEL": 32}, num_stages=2, num_warps=2),
+        triton.Config(
+            {"BLOCK_SIZE_TOK": 16, "BLOCK_SIZE_VOC": 16, "BLOCK_SIZE_DMODEL": 32, "GROUP_SIZE_TOK": 8},
+            num_stages=2,
+            num_warps=2,
+        ),
     ],
     key=["tokens", "vocabs", "d_model"],
 )
@@ -36,8 +40,11 @@ def fused_kernel_forward(
     block_d_model = meta["BLOCK_SIZE_DMODEL"]
 
     # Get thread id.
-    pid_tok = tl.program_id(axis=0)
-    pid_voc = tl.program_id(axis=1)
+    pid = tl.program_id(axis=0)
+    grid_tokens = tl.cdiv(tokens, block_tokens)
+    grid_vocabs = tl.cdiv(vocabs, block_vocabs)
+    pid_tok = pid // grid_vocabs
+    pid_voc = pid % grid_vocabs
 
     # Get offsets.
     off_tok = pid_tok * block_tokens + tl.arange(0, block_tokens)
@@ -92,8 +99,12 @@ def fused_forward(input, weight, target):
 
     output = torch.ones((tokens, vocabs), dtype=input.dtype, device=input.device)
 
-    # Enqueue kernel.
-    grid = lambda META: (triton.cdiv(tokens, META["BLOCK_SIZE_TOK"]), triton.cdiv(vocabs, META["BLOCK_SIZE_VOC"]))
+    # Kernel grid
+    def grid(meta):
+        # Use 1D grid so that we can control the groups for L2 cache access pattern.
+        return (triton.cdiv(tokens, meta["BLOCK_SIZE_TOK"]) * triton.cdiv(vocabs, meta["BLOCK_SIZE_VOC"]),)
+
+    # Kernel launch
     fused_kernel_forward[grid](
         # fmt: off
         input, weight, output, # ptrs
