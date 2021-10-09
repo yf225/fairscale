@@ -42,7 +42,7 @@ SHAPES = [
 ]
 KERNELS = [
     # BaselineSoftmax,
-    # BaselineSoftmaxNllLoss,
+    BaselineSoftmaxNllLoss,
     TritonFuseAll,
     #    TritonSoftmax,
     #    InplaceSoftmax,
