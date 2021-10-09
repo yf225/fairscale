@@ -17,15 +17,21 @@ BLOCK_SIZE_DMODEL = 32
 
 def get_configs():
     if _searching:
+        # sweep a big config space, will take a long time, esp. when tensors are large.
         block_sizes_tok = [32, 64, 128, 256]
         block_sizes_voc = [32, 64, 128, 256]
         stages = [3, 4, 5]
         warps = [2, 4, 8]
     else:
-        block_sizes_voc = [32, 64, 128, 256]
-        block_sizes_voc = [32, 64, 128, 256]
-        stages = [3, 4, 5]
-        warps = [2, 4, 8]
+        # Just a few good configs.
+        return [
+            # v100, 5k vocab
+            triton.Config(
+                {"BLOCK_SIZE_TOK": 256, "BLOCK_SIZE_VOC": 128, "BLOCK_SIZE_DMODEL": 32, "GROUP_SIZE_TOK": 8,},
+                num_stages=1,
+                num_warps=8,
+            )
+        ]
     cfgs = []
     for block_size_tok in [32, 64, 128, 256]:
         for block_size_voc in [32, 64, 128, 256]:
