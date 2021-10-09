@@ -8,15 +8,28 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
+# Enable to do autotune
+_searching = False
+
 # d_model dim must be a multiply of this.
 BLOCK_SIZE_DMODEL = 32
 
 
 def get_configs():
+    if _searching:
+        block_sizes_tok = [32, 64, 128, 256]
+        block_sizes_voc = [32, 64, 128, 256]
+        stages = [3, 4, 5]
+        warps = [2, 4, 8]
+    else:
+        block_sizes_voc = [32, 64, 128, 256]
+        block_sizes_voc = [32, 64, 128, 256]
+        stages = [3, 4, 5]
+        warps = [2, 4, 8]
     cfgs = []
-    for block_size_tok in [16, 32]:
-        for block_size_voc in [16, 32]:
-            for num_stages in [2, 3, 4, 5]:
+    for block_size_tok in [32, 64, 128, 256]:
+        for block_size_voc in [32, 64, 128, 256]:
+            for num_stages in [3, 4, 5]:
                 for num_warps in [2, 4, 8]:
                     c = triton.Config(
                         {
@@ -122,6 +135,8 @@ def fused_forward(input, weight, target):
     # Kernel grid
     def grid(meta):
         # Use 1D grid so that we can control the groups for L2 cache access pattern.
+        if _searching:
+            print(meta)
         return (triton.cdiv(tokens, meta["BLOCK_SIZE_TOK"]) * triton.cdiv(vocabs, meta["BLOCK_SIZE_VOC"]),)
 
     # Kernel launch
