@@ -142,10 +142,12 @@ def test_triton_fuse_all():
     _ = TritonFuseAll
     from fairscale.experimental.nn.triton import fused_forward
 
-    a = torch.rand(5, 32, device="cuda", dtype=torch.float16)
-    b = torch.rand(7, 32, device="cuda", dtype=torch.float16)
-    t = (torch.rand(5, device="cuda") * 5).long()
+    tokens = 500
+    vocabs = 700
+    a = torch.rand(tokens, 32, device="cuda", dtype=torch.float16)
+    b = torch.rand(vocabs, 32, device="cuda", dtype=torch.float16)
+    t = (torch.rand(tokens, device="cuda") * vocabs).long()
     o = fused_forward(a, b, t)
     print(o, o.shape)
     ref = torch.matmul(a, b.T)
-    print(ref - o)
+    print(ref - o, (ref - o).norm())

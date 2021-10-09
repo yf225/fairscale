@@ -8,18 +8,32 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
+# d_model dim must be a multiply of this.
 BLOCK_SIZE_DMODEL = 32
 
 
+def get_configs():
+    cfgs = []
+    for block_size_tok in [16, 32]:
+        for block_size_voc in [16, 32]:
+            for num_stages in [2, 3, 4, 5]:
+                for num_warps in [2, 4, 8]:
+                    c = triton.Config(
+                        {
+                            "BLOCK_SIZE_TOK": block_size_tok,
+                            "BLOCK_SIZE_VOC": block_size_voc,
+                            "BLOCK_SIZE_DMODEL": 32,
+                            "GROUP_SIZE_TOK": 8,
+                        },
+                        num_stages=num_stages,
+                        num_warps=num_warps,
+                    )
+                    cfgs.append(c)
+    return cfgs
+
+
 @triton.autotune(
-    configs=[
-        triton.Config(
-            {"BLOCK_SIZE_TOK": 16, "BLOCK_SIZE_VOC": 16, "BLOCK_SIZE_DMODEL": 32, "GROUP_SIZE_TOK": 8},
-            num_stages=2,
-            num_warps=2,
-        ),
-    ],
-    key=["tokens", "vocabs", "d_model"],
+    configs=get_configs(), key=["tokens", "vocabs", "d_model"],
 )
 @triton.jit
 def fused_kernel_forward(
@@ -38,13 +52,19 @@ def fused_kernel_forward(
     block_tokens = meta["BLOCK_SIZE_TOK"]
     block_vocabs = meta["BLOCK_SIZE_VOC"]
     block_d_model = meta["BLOCK_SIZE_DMODEL"]
+    group_size_tok = meta["GROUP_SIZE_TOK"]
 
-    # Get thread id.
+    # Compute the group of blocks this thread is in.
     pid = tl.program_id(axis=0)
     grid_tokens = tl.cdiv(tokens, block_tokens)
     grid_vocabs = tl.cdiv(vocabs, block_vocabs)
-    pid_tok = pid // grid_vocabs
-    pid_voc = pid % grid_vocabs
+    group_id = pid // grid_vocabs // group_size_tok
+    group_first_pid_tok = group_id * group_size_tok
+    group_size_tok = min(grid_tokens - (group_id * group_size_tok), group_size_tok)  # in case this is the last group
+
+    # Get my pid along tok and voc dimensions.
+    pid_tok = group_first_pid_tok + pid % group_size_tok  # go down columns for better perf
+    pid_voc = (pid - group_first_pid_tok * grid_vocabs) // group_size_tok
 
     # Get offsets.
     off_tok = pid_tok * block_tokens + tl.arange(0, block_tokens)
