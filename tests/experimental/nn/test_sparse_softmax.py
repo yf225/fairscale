@@ -18,6 +18,7 @@ from fairscale.experimental.nn import (
     TopKFaissSoftmax,
     TopKSoftmax,
     TopKTiledSoftmax,
+    TritonFuseAll,
     TritonSoftmax,
 )
 from fairscale.experimental.nn.sparse_softmax import get_data
@@ -134,3 +135,15 @@ def test_topk_faiss(input_data):
     sm = TopKFaissSoftmax(weight, k=2)
     out = sm(input, target)
     assert out.shape == (2, 2)
+
+
+@skip_if_no_cuda
+def test_triton_fuse_all():
+    _ = TritonFuseAll
+    from fairscale.experimental.nn.triton import fused_forward
+
+    a = torch.rand(5, 3, device="cuda", dtype=torch.float16)
+    b = torch.rand(7, 3, device="cuda", dtype=torch.float16)
+    t = (torch.rand(5, device="cuda") * 5).long()
+    o = fused_forward(a, b, t)
+    print(o, o.shape)
