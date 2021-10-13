@@ -35,14 +35,15 @@ def validate_process_group(device: torch.device, process_group: ProcessGroup) ->
         return
 
     world_size = process_group.size()
-    if "cuda" in str(device):
-        input_tensor = torch.ones(1).to(device)
-        output = list(torch.zeros(world_size).to(device).chunk(world_size))
-        dist.all_gather(output, input_tensor, group=process_group)
-        assert torch.cat(output).sum() == float(world_size), (
-            f"found {torch.cat(output).sum()} devices in process group but "
-            f"world_size={world_size}. Check torch.cuda.set_device is called properly"
-        )
+    # This will lead to a hanging error when MoE modesl are initialiazed sequentially.
+    # if "cuda" in str(device):
+    #     input_tensor = torch.ones(1).to(device)
+    #     output = list(torch.zeros(world_size).to(device).chunk(world_size))
+    #     dist.all_gather(output, input_tensor, group=process_group)
+    #     assert torch.cat(output).sum() == float(world_size), (
+    #         f"found {torch.cat(output).sum()} devices in process group but "
+    #         f"world_size={world_size}. Check torch.cuda.set_device is called properly"
+    #    )
 
 
 def enable_pytorch_sync_bn(module: torch.nn.Module) -> None:

@@ -361,11 +361,11 @@ class FullyShardedDataParallel(nn.Module):
         self._has_params = len(params) > 0
 
         # TODO(anj): Should we conditionally do this only if we have params?
+        # TODO(anj): this won't work for MOE params.
         self.buffer_size = ceil(sum(p.numel() for p in params) // torch.distributed.get_world_size())
+        self.ssd_buffer_filename = ""
         if self.ssd_offload:
             self.ssd_buffer_filename = f"{randint(1, int(10E6))}_rank{self.rank}"
-            # if torch.distributed.get_rank() == 0:
-                # print(f"self.buffer_size {self.buffer_size/2**30}GB allocated for {self.ssd_buffer_filename}")
             self.ssd_buffer = ssd_offload.SsdBuffer(self.buffer_size, self.ssd_buffer_filename)
             self.move_grads_to_cpu = True
             self.move_params_to_cpu = True
@@ -670,8 +670,6 @@ class FullyShardedDataParallel(nn.Module):
         assert len(self.numel_padded_per_param) == len(self.params)
 
         if self.ssd_offload:
-            # if torch.distributed.get_rank() == 0:
-                # print(f"{self.ssd_buffer_filename} _shard_params_to_disk")
             self.ssd_buffer.to_disk()
 
     def _get_shard(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, int]:
@@ -759,8 +757,6 @@ class FullyShardedDataParallel(nn.Module):
         # parameters and not the actual parameters. Ideally we don't users to operate on
         # actual params.
         if self.ssd_offload and list(self.ssd_buffer.buffer.size()) == [1]:
-            # if torch.distributed.get_rank() == 0:
-            #     print(f"{self.ssd_buffer_filename} parameters_from_disk")
             self.ssd_buffer.from_disk(self.buffer_size)
 
         return super().parameters(recurse=recurse)
@@ -793,8 +789,6 @@ class FullyShardedDataParallel(nn.Module):
         # parameters and not the actual parameters. Ideally we don't users to operate on
         # actual params.
         if self.ssd_offload and list(self.ssd_buffer.buffer.size()) == [1]:
-            # if torch.distributed.get_rank() == 0:
-            #     print(f"{self.ssd_buffer_filename} named_parameters_from_disk")
             self.ssd_buffer.from_disk(self.buffer_size)
 
         named_param = super().named_parameters(prefix=prefix, recurse=recurse)
@@ -895,8 +889,6 @@ class FullyShardedDataParallel(nn.Module):
 
         if self.ssd_offload:
             if list(self.ssd_buffer.buffer.size()) == [1]:
-                # if torch.distributed.get_rank() == 0:
-                #     print(f"{self.ssd_buffer_filename} no_return_full_state_dict_from_disk")
                 self.ssd_buffer.from_disk(self.buffer_size)
 
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
@@ -1051,8 +1043,6 @@ class FullyShardedDataParallel(nn.Module):
                             p._shard_size = p.data.size()  # type: ignore
                             p._handle = self.ssd_buffer.insert(p.data)
                             free_storage_(p.data)
-                        # if torch.distributed.get_rank() == 0:
-                        #     print(f"{self.ssd_buffer_filename} _after_summon_params_to_disk")
                         self.ssd_buffer.to_disk()
                     self.training_state = TrainingState.IDLE
 
@@ -1259,14 +1249,13 @@ class FullyShardedDataParallel(nn.Module):
         log_memory_stats("before_fw_init", self.ssd_buffer_filename)
         if self.ssd_offload and list(self.ssd_buffer.buffer.size()) == [1]:
             # TODO(anj): we have a similar check elsewhere. Should we do this automatically?
-            # if torch.distributed.get_rank() == 0:
-            #     print(f"{self.ssd_buffer_filename} forward_from_disk")
             self.ssd_buffer.from_disk(self.buffer_size)
 
         log_memory_stats("before_fw_p_data", self.ssd_buffer_filename)
-        # The params are on disk and need to be moved to the CPU.
-        for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-            p.data = handle.get_tensor().view(p._shard_size)
+        if self.ssd_offload:
+            # The params are on disk and need to be moved to the CPU.
+            for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
+                p.data = handle.get_tensor().view(p._shard_size)
 
         log_memory_stats("before_fw_lazy_init", self.ssd_buffer_filename)
         self._lazy_init()
@@ -1347,23 +1336,9 @@ class FullyShardedDataParallel(nn.Module):
     @torch.no_grad()
     def _free_ssd_offload(self):
         if self.ssd_offload:
-            # if torch.distributed.get_rank() == 0:
-            #     print(f"{self.ssd_buffer_filename} _free_ssd_offload_to_disk")
             if list(self.ssd_buffer.buffer.size()) == [1]:
                 return
             self.ssd_buffer.to_disk()
-            # Freeing all storage results in an error in backward()
-            # RuntimeError: setStorage: sizes [256, 256], strides [256, 1], storage offset 196608, and itemsize 4 requiring a storage size of 1048576 are out of bounds for storage of size 0
-            # for p in self.params:
-            # #     # TODO(anj): We need another function that enables us to drop the current
-            # #     # tensors and not have to write to disk in the case of eval.
-            #     free_storage_(p._fp32_shard)
-            #     free_storage_(p.data)
-
-            # At the end of forward you should have ideally freed all memory. However
-            # you will be left with 2 tensors still allocated 1) full params
-            # 2) grads and this will depend on if you are setting reshard_after_forward
-            # and if you are training the model.
 
     def _register_pre_backward_hooks(self, outputs: Any) -> Any:
         """Register pre-backward hook to run before the wrapped module's
@@ -1767,8 +1742,6 @@ class FullyShardedDataParallel(nn.Module):
 
         if self.ssd_offload and list(self.ssd_buffer.buffer.size()) == [1]:
             # TODO(anj): we have a similar check elsewhere. Should we do this automatically?
-            # if torch.distributed.get_rank() == 0:
-            #     print(f"{self.ssd_buffer_filename} rebuild_params_from_disk")
             self.ssd_buffer.from_disk(self.buffer_size, dtype=self.compute_dtype)
 
             # The params are on disk and need to be moved to the CPU.
