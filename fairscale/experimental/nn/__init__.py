@@ -14,6 +14,7 @@ from .sparse_softmax import (  # dense; sparse
     TopKFaissSoftmax,
     TopKSoftmax,
     TopKTiledSoftmax,
+    TorchFuseAllTiled,
     TritonFuseAll,
     TritonSoftmax,
 )

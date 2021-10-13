@@ -96,7 +96,9 @@ class BaselineSoftmaxNllLoss(BaselineSoftmax):
 class TritonSoftmax(BaselineSoftmax):
     """ Softmax that uses xformers' softmax. """
 
-    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 0):  # k, tile_factor is ignored.
+    def __init__(
+        self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 0
+    ):  # k, tile_factor are ignored.
         super().__init__(proj_weight)
         assert triton_softmax is not None, "Need to import xformers"
         assert proj_weight.dtype == torch.float32, "fp16 not yet supported"
@@ -114,10 +116,66 @@ class TritonSoftmax(BaselineSoftmax):
         return x.reshape(orig_shape)
 
 
+class TorchFuseAllTiled(nn.Module):
+    """ Torch fuse fc + softmax + nll_loss in a tiled fashion.
+
+        This uses less memory but is quite a bit slower.
+    """
+
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 16):  # k is ignored.
+        super().__init__()
+        vocab, d_model = proj_weight.shape
+        self.proj_weight = proj_weight
+        self.weights = torch.split(proj_weight, vocab // tile_factor, 0)
+        self.tile_factor = tile_factor
+
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        assert kwargs == {}
+        input, target = input
+        assert isinstance(input, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        tokens, d_model = input.shape
+        inputs = torch.split(input, tokens // self.tile_factor, 0)
+        # Get maxs
+        maxs = []
+        for i in inputs:
+            m = None  # max with (tokens_tile,) shape
+            for w in self.weights:
+                if m is None:
+                    m = torch.matmul(i, w.T).max(dim=1)[0]
+                else:
+                    m = torch.max(m, torch.matmul(i, w.T).max(dim=1)[0])
+            maxs.append(m)  # (tokens_tile,)
+        maxs_tensor = torch.cat(maxs)  # (tokens,)
+        assert maxs_tensor.shape == (tokens,)
+
+        # Get sums. In fp16, due to accumulation, results will be slightly differ
+        # from untiled version.
+        sums = []
+        for idx, i in enumerate(inputs):
+            s = None  # sum with (tokens_tile,) shape
+            for w in self.weights:
+                if s is None:
+                    s = (torch.matmul(i, w.T) - maxs[idx].reshape(-1, 1)).exp().sum(dim=1)
+                else:
+                    s += (torch.matmul(i, w.T) - maxs[idx].reshape(-1, 1)).exp().sum(dim=1)
+            sums.append(s)  # (tokens_tile,)
+        sums = torch.cat(sums)  # (tokens,)
+        assert sums.shape == (tokens,)
+
+        # select weights for targets
+        tw = self.proj_weight.gather(dim=0, index=target.reshape(target.shape[0], 1).expand(target.shape[0], d_model))
+        assert tw.shape == (tokens, d_model)
+        result = -((((input * tw).sum(dim=1)) - maxs_tensor).exp() / sums).log()
+        return result.mean()
+
+
 class TritonFuseAll(nn.Module):
     """ Triton fuse fc + softmax + nll_loss. """
 
-    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 0):  # k, tile_factor is ignored.
+    def __init__(
+        self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 0
+    ):  # k, tile_factor are ignored.
         super().__init__()
         self.weight = proj_weight
 

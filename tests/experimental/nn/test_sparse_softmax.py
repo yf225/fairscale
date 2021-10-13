@@ -13,11 +13,13 @@ from torch import nn
 
 from fairscale.experimental.nn import (
     BaselineSoftmax,
+    BaselineSoftmaxNllLoss,
     InplaceSoftmax,
     TiledSoftmax,
     TopKFaissSoftmax,
     TopKSoftmax,
     TopKTiledSoftmax,
+    TorchFuseAllTiled,
     TritonFuseAll,
     TritonSoftmax,
 )
@@ -151,3 +153,18 @@ def test_triton_fuse_all():
     print(o, o.shape)
     ref = torch.matmul(a, b.T).max(dim=1)[0]
     print(ref, ref.shape)
+
+
+@skip_if_no_cuda
+def test_torch_fuse_all():
+    shape = ((5, 3), (3, 7))
+    input, weight, target = get_data(shape, dtype=torch.float16)
+    k = TorchFuseAllTiled(weight, tile_factor=2)
+
+    o = k(input, target)
+    print(o, o.shape)
+
+    refk = BaselineSoftmaxNllLoss(weight)
+    o = refk(input, target)
+    print(o, o.shape)
+    return
