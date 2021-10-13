@@ -57,11 +57,10 @@ def get_configs():
 @triton.jit
 def fused_kernel_forward(
     # fmt: off
-    input, weight, output,
+    input, weight, maxs,
     tokens, vocabs, d_model,
     stride_tok, stride_d_tok,
     stride_voc, stride_d_voc,
-    stride_out_tok, stride_out_voc,
     **meta
     # fmt: on
 ):
@@ -109,13 +108,17 @@ def fused_kernel_forward(
         ptr_voc += block_d_model * stride_d_voc
         off_d_model += block_d_model
 
+    off_tok = tl.arange(0, 5)
+    out_ptr = maxs + off_tok
+    mask = off_tok < tokens
     # Get max for each token.
+    acc = acc.to(tl.float16)
+    acc = tl.reshape(acc, (128 * 256,))
+    x = tl.zeros((5,), tl.float16) + tl.max(acc, axis=0)
 
     # Write back (fp16).
-    acc = acc.to(tl.float16)
-    out_ptr = output + (stride_out_tok * off_tok[:, None] + stride_out_voc * off_voc[None, :])
-    mask = (off_tok[:, None] < tokens) & (off_voc[None, :] < vocabs)
-    tl.store(out_ptr, acc, mask=mask)
+    # tl.store(out_ptr, x, mask=mask)
+    tl.store(out_ptr, x)
 
 
 def fused_forward(input, weight, target):
@@ -133,10 +136,9 @@ def fused_forward(input, weight, target):
     assert target.dtype == torch.long
     assert input.stride(1) == weight.stride(1) == 1
 
-    # Get the max output
-    output = torch.empty((vocabs,), dtype=input.dtype, device=input.device)
-
-    output = torch.ones((tokens, vocabs), dtype=input.dtype, device=input.device)
+    # Get the maximum scores of each token.
+    maxs = torch.empty((tokens,), dtype=input.dtype, device=input.device)
+    print(maxs.shape)
 
     # Kernel grid
     def grid(meta):
@@ -148,12 +150,11 @@ def fused_forward(input, weight, target):
     # Kernel launch
     fused_kernel_forward[grid](
         # fmt: off
-        input, weight, output, # ptrs
+        input, weight, maxs, # ptrs
         tokens, vocabs, d_model, # dims
         # strides
         input.stride(0), input.stride(1),
         weight.stride(0), weight.stride(1),
-        output.stride(0), output.stride(1),
         # fmt: on
     )
-    return output
+    return maxs

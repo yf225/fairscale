@@ -11,12 +11,14 @@ import triton.language as tl
 def kernel(out, **meta):
     pid = tl.program_id(axis=0)
 
-    c = tl.zeros((5, 5), tl.float16)
-    for i in range(0, 5):
-        a = tl.zeros((5, 6), tl.float16)
-        b = tl.zeros((6, 5), tl.float16)
-        c += tl.dot(a, b)
-        c += 1.1
+    v = float(1.1)
+    v = v.to(tl.float16)
+    c = tl.zeros((128, 128), tl.float16)
+    a = tl.zeros((128, 256), tl.float16) + v
+    b = tl.zeros((256, 128), tl.float16) + v
+    for i in range(0, 1):
+        # c += v
+        c += tl.dot(a, b).to(tl.float16)
 
     epilog = meta["EPILOG"]
     epilog(out, c)
@@ -24,21 +26,21 @@ def kernel(out, **meta):
 
 @triton.jit
 def epilog(out, c):
-    x = c + tl.zeros((5, 5), tl.float16)
+    x = c + tl.zeros((128, 128), tl.float16)
     x = tl.max(x, axis=1)
 
-    out_ptrs = out + tl.arange(0, 5)
+    out_ptrs = out + tl.arange(0, 128)
     tl.store(out_ptrs, x)
 
 
 def test():
 
-    out = torch.ones((5,), dtype=torch.float16, device="cuda")
+    out = torch.ones((128,), dtype=torch.float16, device="cuda")
 
     def grid(meta):
         return (1,)
 
-    kernel[grid](out, EPILOG=epilog)
+    kernel[grid](out, EPILOG=epilog, num_stages=1, num_warps=1)
     print(out)
 
 
