@@ -19,6 +19,7 @@ from fairscale.experimental.nn import (  # noqa: F401
     TopKFaissSoftmax,
     TopKSoftmax,
     TopKTiledSoftmax,
+    TorchFuseAllTiled,
     TritonFuseAll,
     TritonSoftmax,
 )
@@ -36,14 +37,16 @@ SHAPES = [
     # ("1k_128h_256k", (1024, 128), (128, 256 * 1024)),
     # ("4k_128h_256k", (4096, 128), (128, 256 * 1024)),
     # ("8k_4k_32k", (4 * 2048, 4 * 1024), (4 * 1024, 32 * 1024)),
-    ("24k_4k_50k", (12 * 2048, 4 * 1024), (4 * 1024, 50 * 1024)),
+    # ("24k_4k_50k", (12 * 2048, 4 * 1024), (4 * 1024, 50 * 1024)),
     # ("8k_4k_256k", (4 * 2048, 4 * 1024), (4 * 1024, 256 * 1024)),
     # ("8k_4k_256008", (4 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
+    ("xk_4k_256008", (4 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
 ]
 KERNELS = [
-    # BaselineSoftmax,
-    BaselineSoftmaxNllLoss,
-    TritonFuseAll,
+    BaselineSoftmax,
+    # BaselineSoftmaxNllLoss,
+    # TritonFuseAll,
+    TorchFuseAllTiled,
     #    TritonSoftmax,
     #    InplaceSoftmax,
     # TiledSoftmax,
@@ -74,7 +77,9 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
     input, weight.data, target = input.cuda(), weight.data.cuda(), target.cuda()
 
     # Create the kernel
-    k = kernel(weight, k=200, tile_factor=60)
+    k = kernel(
+        weight, k=200, tile_factor=16
+    )  # 16 is good for TorchFuseAllTiled, 8 and 32 are both slower. Power of 2 is much better. memory wise, 16 is good enough and their seems to be a floor of 2.xGB no matter what with no_grad
 
     # Get the events
     events = [Event(enable_timing=True) for _ in range(repeats)]
@@ -89,7 +94,7 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
             events[i].record()
             out = k(input, target)
             if fwd_bwd:
-                if kernel not in [BaselineSoftmaxNllLoss]:
+                if kernel not in [BaselineSoftmaxNllLoss, TorchFuseAllTiled]:
                     my_nll_loss(out, target).backward()
                 else:
                     out.backward()
