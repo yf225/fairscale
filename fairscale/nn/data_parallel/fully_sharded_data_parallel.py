@@ -119,6 +119,16 @@ class TrainingState(Enum):
     BACKWARD_POST = auto()
     SUMMON_FULL_PARAMS = auto()
 
+import gc
+def log_tensors_in_memory(label):
+    gc.collect()
+    if torch.distributed.get_rank() == 0:
+        for obj in gc.get_objects():
+            try:
+                if torch.is_tensor(obj) or (hasattr(obj, "data") and torch.is_tensor(obj.data)):
+                    print(label, type(obj), type(obj).__name__, obj.size(), obj.device, obj.storage().size())
+            except:
+                pass
 
 class FullyShardedDataParallel(nn.Module):
     """
@@ -304,6 +314,7 @@ class FullyShardedDataParallel(nn.Module):
         cpu_offload: bool = False,
         **kwargs: Dict[str, Any],
     ):
+        # log_tensors_in_memory("init")
         init_start = time.time()
         super().__init__()
         self.process_group = process_group or get_process_group_cached()
@@ -358,6 +369,8 @@ class FullyShardedDataParallel(nn.Module):
                 param_names.append(param_name)
                 params.append(param)
 
+        # log_tensors_in_memory("params")
+
         self._has_params = len(params) > 0
 
         # TODO(anj): Should we conditionally do this only if we have params?
@@ -369,6 +382,8 @@ class FullyShardedDataParallel(nn.Module):
             self.ssd_buffer = ssd_offload.SsdBuffer(self.buffer_size, self.ssd_buffer_filename)
             self.move_grads_to_cpu = True
             self.move_params_to_cpu = True
+
+        # log_tensors_in_memory("after_ssd_offload")
 
         # For now, it is either all flatten or none flatten. This will be extended to
         # multiple flatten groups in my next PR.
@@ -384,6 +399,8 @@ class FullyShardedDataParallel(nn.Module):
         self._fsdp_wrapped_module: nn.Module = FlattenParamsWrapper(module, param_list=to_be_flatten_params)
         del module  # free original module in case it helps garbage collection
 
+        # log_tensors_in_memory("after_flatten_params")
+
         # Now, in this FSDP wrapper class, we keep a list of to-be-flatten and not-to-be-flatten
         # params for doing sharding, gradient hooks, etc. Note, the ordering of the
         # list matters: flatten params are always in the front.
@@ -398,7 +415,11 @@ class FullyShardedDataParallel(nn.Module):
         # Shard module parameters in place
         self._shard_parameters_()
 
+<<<<<<< Updated upstream
         self.training_state = TrainingState.IDLE
+=======
+        # log_tensors_in_memory("after_shard")
+>>>>>>> Stashed changes
 
         # Make sure all parameters are sharded.
         for n, p in self.named_parameters():
