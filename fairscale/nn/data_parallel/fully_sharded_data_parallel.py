@@ -415,11 +415,8 @@ class FullyShardedDataParallel(nn.Module):
         # Shard module parameters in place
         self._shard_parameters_()
 
-<<<<<<< Updated upstream
         self.training_state = TrainingState.IDLE
-=======
         # log_tensors_in_memory("after_shard")
->>>>>>> Stashed changes
 
         # Make sure all parameters are sharded.
         for n, p in self.named_parameters():

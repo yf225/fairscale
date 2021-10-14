@@ -760,10 +760,10 @@ class SimpleLinear(torch.nn.Module):
         self.module = torch.nn.Sequential(*seq_layers)
         self.bs = 2
 
-    def get_input(self, device):
+    def get_input(self, device, dtype=torch.float32):
         torch.manual_seed(1 + self.rank)  # keep everything deterministic
-        src = torch.rand((self.bs, self.input_size), device=device, dtype=torch.float32)
-        tgt = torch.rand((self.bs, self.input_size), device=device, dtype=torch.float32)
+        src = torch.rand((self.bs, self.input_size), device=device, dtype=dtype)
+        tgt = torch.rand((self.bs, self.input_size), device=device, dtype=dtype)
         return (src, tgt)
 
     def forward(self, src_ids, tgt_ids):
@@ -825,7 +825,6 @@ def checkpoint_simple_linear_model(rank, args):
     config = {}
     config["flatten_parameters"] = not (args.skip_flatten_parameters)
     config["ssd_offload"] = args.ssd_offload
-    config["move_params_to_cpu"] = args.move_params_to_cpu
     config["mixed_precision"] = args.fp16
     for i in range(torch.cuda.device_count()):
         if i ==  rank:
@@ -844,7 +843,6 @@ def checkpoint_simple_linear_model(rank, args):
 
     checkpoint_path = f"/checkpoint/anj/xlm-g/test_sliced_{rank}"
     state = model.state_dict()
-    print(f"state {state}")
     convert_consolidated_to_sliced_checkpoints(state, rank=rank, checkpoint_path=checkpoint_path)
 
     model_state = torch.load(checkpoint_path)
@@ -876,25 +874,33 @@ def benchmark_simple_linear_model(rank, args):
         config = {}
         config["flatten_parameters"] = not (args.skip_flatten_parameters)
         config["ssd_offload"] = args.ssd_offload
-        config["move_params_to_cpu"] = args.move_params_to_cpu
-        config["mixed_precision"] = args.fp16
+        config["mixed_precision"] = args.mixed_precision
+        config["compute_dtype"] = torch.float16 if args.full_fp16 else None
         for i in range(2):
             if i  == rank:
-                print(f"wrapping for {i}")
                 with enable_wrap(wrapper_cls=FSDP, **config):
                     model = auto_wrap(model, auto_wrap_policy=my_auto_wrap_policy)
                     model = FSDP(model, **config)
-            print(f"model {model}")
             torch.distributed.barrier()
 
-        return
+        if args.ssd_offload:
+            for m in model.modules():  # includes self
+                if isinstance(m, FSDP):
+                    m.ssd_buffer.from_disk(m.buffer_size)
+
+                    for p, handle in zip(m.parameters(), m.ssd_buffer.get_tensors()):
+                        p.data = handle.get_tensor().to(torch.float16)
+                    m.ssd_buffer.to_disk()
+        else:
+           model = model.half().cuda()
+
         tk.print_time("FSDP_MODEL", 1.0)
         monitor_memory(rank, result, "FSDP_MODEL")
 
         num_steps = args.max_batch
         model.eval()
         # Inputs always cuda regardless of move_grads_cpu, or model.device
-        input = model.module.get_input(torch.device("cuda"))
+        input = model.module.get_input(torch.device("cuda"), dtype=config["compute_dtype"])
 
         with torch.no_grad():
             for i in range(num_steps):
@@ -922,7 +928,8 @@ def benchmark_simple_linear_model(rank, args):
         config = {}
         config["flatten_parameters"] = not (args.skip_flatten_parameters)
         config["move_params_to_cpu"] = args.move_params_to_cpu
-        config["mixed_precision"] = args.fp16
+        config["mixed_precision"] = args.mixed_precision
+        config["compute_dtype"] = torch.float16 if args.full_fp16 else None
         with enable_wrap(wrapper_cls=FSDP, **config):
             model = auto_wrap(model, auto_wrap_policy=my_auto_wrap_policy)
             model = FSDP(model, **config)
@@ -932,7 +939,7 @@ def benchmark_simple_linear_model(rank, args):
         num_steps = args.max_batch
         model.eval()
         # Inputs always cuda regardless of move_grads_cpu, or model.device
-        input = model.module.get_input(torch.device("cuda"))
+        input = model.module.get_input(torch.device("cuda"), dtype=config["compute_dtype"])
 
         with torch.no_grad():
             for i in range(num_steps):
@@ -944,13 +951,13 @@ def benchmark_simple_linear_model(rank, args):
 
     ssd_result = benchmark_fsdp_ssd_offload()
     log_tensors_in_memory("eval_ends")
-    # torch.cuda.reset_peak_memory_stats()
-    # orig_result = benchmark_fsdp_vanilla()
-    # diff_result = {}
-    # for (k1, v1), (k2, v2) in zip(orig_result.items(), ssd_result.items()):
-    #     diff_result[k1] = v1 - v2
-    #     if torch.distributed.get_rank() == 0:
-    #         print(f"K: {k1} Diff: {diff_result[k1]}")
+    torch.cuda.reset_peak_memory_stats()
+    orig_result = benchmark_fsdp_vanilla()
+    diff_result = {}
+    for (k1, v1), (k2, v2) in zip(orig_result.items(), ssd_result.items()):
+        diff_result[k1] = v1 - v2
+        if torch.distributed.get_rank() == 0:
+            print(f"K: {k1} Diff: {diff_result[k1]}")
 
     fileList = glob.glob(os.getcwd() + "/*_rank*")
     for file in fileList:
@@ -1011,7 +1018,8 @@ parser.add_argument(
 )
 parser.add_argument("--debug", action="store_true", default=False, help="Display additional debug information")
 parser.add_argument("--move_params_to_cpu", action="store_true", default=False, help="Use ssd_offload FSDP")
-parser.add_argument("--fp16", action="store_true", default=False, help="Use ssd_offload FSDP")
+parser.add_argument("--mixed_precision", action="store_true", default=False, help="Use mixed precision in FSDP")
+parser.add_argument("--full_fp16", action="store_true", default=False, help="Use full FP16 in FSDP")
 parser.add_argument("--skip_flatten_parameters", action="store_true", default=False, help="Use ssd_offload FSDP")
 parser.add_argument("--ssd_offload", action="store_true", default=False, help="Use ssd_offload FSDP")
 
