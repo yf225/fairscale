@@ -210,7 +210,7 @@ def get_world_sizes() -> List[int]:
 
 def spawn_for_all_world_sizes(test_func: Callable, world_sizes: List[int] = get_world_sizes(), args: Any = []) -> None:
 
-    for world_size in [2]:
+    for world_size in world_sizes:
         _, filename = tempfile.mkstemp()
         _, filename_rpc = tempfile.mkstemp()
 

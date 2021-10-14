@@ -7,9 +7,9 @@ import contextlib
 import copy
 from enum import Enum, auto
 import functools
+import gc
 import logging
-from math import inf
-from math import ceil
+from math import ceil, inf
 import os
 from random import randint
 import time
@@ -32,6 +32,7 @@ from typing import (
     cast,
 )
 
+import psutil
 import torch
 from torch.autograd import Variable
 import torch.distributed as dist
@@ -55,9 +56,6 @@ from fairscale.utils.reduce_scatter_bucketer import ReduceScatterBucketer
 from fairscale.utils.state_dict import replace_by_prefix_
 
 from . import fsdp_optim_utils as ou
-import gc
-import psutil
-import traceback
 
 if TYPE_CHECKING:
     from collections import OrderedDict  # noqa: F401
@@ -66,6 +64,7 @@ if os.getenv("ENABLE_NCCL_BASE_COLLECTIVES", "1") == "0":
     enable_nccl_base_collectives = False
 else:
     enable_nccl_base_collectives = True
+
 
 def log_tensors_in_memory(label):
     gc.collect()
@@ -77,20 +76,22 @@ def log_tensors_in_memory(label):
             except:
                 pass
 
+
 def log_memory_stats(key, filename):
     result = {}
-    key = key + f'_{filename}_'
+    key = key + f"_{filename}_"
     torch.cuda.synchronize()
     if torch.distributed.get_rank() == 0:
-        result[key + "_cpu_memory_percent_free_GB"] = psutil.virtual_memory()[4] / 2**30
+        result[key + "_cpu_memory_percent_free_GB"] = psutil.virtual_memory()[4] / 2 ** 30
 
-        result[key + "_memory_allocated_GB"] = torch.cuda.memory_allocated(0) / 2**30
-        result[key + "_max_memory_allocated_GB"] = torch.cuda.max_memory_allocated(0) / 2**30
+        result[key + "_memory_allocated_GB"] = torch.cuda.memory_allocated(0) / 2 ** 30
+        result[key + "_max_memory_allocated_GB"] = torch.cuda.max_memory_allocated(0) / 2 ** 30
 
-        result[key + "_memory_reserved_GB"] = torch.cuda.memory_reserved(0) / 2**30
-        result[key + "_max_memory_reserved_GB"] = torch.cuda.max_memory_reserved(0) / 2**30
+        result[key + "_memory_reserved_GB"] = torch.cuda.memory_reserved(0) / 2 ** 30
+        result[key + "_max_memory_reserved_GB"] = torch.cuda.max_memory_reserved(0) / 2 ** 30
 
         # print(f"{result}")
+
 
 class TrainingState(Enum):
     """
@@ -119,7 +120,10 @@ class TrainingState(Enum):
     BACKWARD_POST = auto()
     SUMMON_FULL_PARAMS = auto()
 
+
 import gc
+
+
 def log_tensors_in_memory(label):
     gc.collect()
     if torch.distributed.get_rank() == 0:
@@ -129,6 +133,7 @@ def log_tensors_in_memory(label):
                     print(label, type(obj), type(obj).__name__, obj.size(), obj.device, obj.storage().size())
             except:
                 pass
+
 
 class FullyShardedDataParallel(nn.Module):
     """
@@ -375,10 +380,11 @@ class FullyShardedDataParallel(nn.Module):
 
         # TODO(anj): Should we conditionally do this only if we have params?
         # TODO(anj): this won't work for MOE params.
-        self.buffer_size = ceil(sum(p.numel() for p in params) // torch.distributed.get_world_size())
+        self.buffer_size = sum(p.numel() for p in params)
         self.ssd_buffer_filename = ""
         if self.ssd_offload:
             self.ssd_buffer_filename = f"{randint(1, int(10E6))}_rank{self.rank}"
+            print(f"self.ssd_buffer_filename {self.ssd_buffer_filename}")
             self.ssd_buffer = ssd_offload.SsdBuffer(self.buffer_size, self.ssd_buffer_filename)
             self.move_grads_to_cpu = True
             self.move_params_to_cpu = True
@@ -689,6 +695,7 @@ class FullyShardedDataParallel(nn.Module):
 
         if self.ssd_offload:
             self.ssd_buffer.to_disk()
+            print(f"writing to disk {self.ssd_buffer_filename}")
 
     def _get_shard(self, tensor: torch.Tensor) -> Tuple[torch.Tensor, int]:
         """Return the local shard of a full tensor."""
@@ -802,7 +809,7 @@ class FullyShardedDataParallel(nn.Module):
         If you want the full param to be returned, you should call this function
         under a `summon_full_params` context when using flattened or original params.
         """
-        
+
         # TODO(anj): Use `copy_into_tensor` in order to provide a copy of the
         # parameters and not the actual parameters. Ideally we don't users to operate on
         # actual params.
@@ -1263,8 +1270,9 @@ class FullyShardedDataParallel(nn.Module):
             self._streams["all_gather"].wait_stream(torch.cuda.current_stream())
 
     def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
-        
+
         log_memory_stats("before_fw_init", self.ssd_buffer_filename)
+        print(f"reading from disk {self.ssd_buffer_filename}")
         if self.ssd_offload and list(self.ssd_buffer.buffer.size()) == [1]:
             # TODO(anj): we have a similar check elsewhere. Should we do this automatically?
             self.ssd_buffer.from_disk(self.buffer_size)
@@ -1280,7 +1288,6 @@ class FullyShardedDataParallel(nn.Module):
         # Start of a forward pass.
         self.training_state = TrainingState.FORWARD
 
-
         log_memory_stats("before_fw_cast_floats", self.ssd_buffer_filename)
         # For root and mixed precision, we convert the input to FP16 (no_grad is needed for
         # the conversion).
@@ -1293,24 +1300,24 @@ class FullyShardedDataParallel(nn.Module):
         if self.force_input_to_fp32 and not self.mixed_precision:
             args, kwargs = cast_floats_to_right_precision(False, False, *args, **kwargs)
 
-        log_memory_stats("before_fw_rebuild",  self.ssd_buffer_filename)
+        log_memory_stats("before_fw_rebuild", self.ssd_buffer_filename)
         # All-gather full parameters. This will also transfer FP32 parameters to
         # ``self.compute_dtype`` (e.g., FP16 if *mixed_precision* is ``True``).
         self._rebuild_full_params()
 
-        log_memory_stats("before_fw_register_fw_hook",  self.ssd_buffer_filename)
+        log_memory_stats("before_fw_register_fw_hook", self.ssd_buffer_filename)
         # Register backward hooks to reshard params and reduce-scatter grads.
         # These need to be re-registered every forward pass.
         self._register_post_backward_hooks()
 
         # log_tensors_in_memory("before_forward")
-        
+
         log_memory_stats("before_fw", self.ssd_buffer_filename)
 
         outputs = self.module(*args, **kwargs)
-        
+
         log_memory_stats("after_fw", self.ssd_buffer_filename)
-        
+
         if self.reshard_after_forward:
             self._free_full_params()
             if self.mixed_precision or self.move_params_to_cpu:
@@ -1348,7 +1355,7 @@ class FullyShardedDataParallel(nn.Module):
 
         self._free_ssd_offload()
         log_memory_stats("after_ssd_offload", self.ssd_buffer_filename)
-        
+
         return outputs
 
     @torch.no_grad()

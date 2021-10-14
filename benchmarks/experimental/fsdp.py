@@ -827,7 +827,7 @@ def checkpoint_simple_linear_model(rank, args):
     config["ssd_offload"] = args.ssd_offload
     config["mixed_precision"] = args.fp16
     for i in range(torch.cuda.device_count()):
-        if i ==  rank:
+        if i == rank:
             with enable_wrap(wrapper_cls=FSDP, **config):
                 model = auto_wrap(model, auto_wrap_policy=my_auto_wrap_policy)
                 model = FSDP(model, **config)
@@ -877,7 +877,7 @@ def benchmark_simple_linear_model(rank, args):
         config["mixed_precision"] = args.mixed_precision
         config["compute_dtype"] = torch.float16 if args.full_fp16 else None
         for i in range(2):
-            if i  == rank:
+            if i == rank:
                 with enable_wrap(wrapper_cls=FSDP, **config):
                     model = auto_wrap(model, auto_wrap_policy=my_auto_wrap_policy)
                     model = FSDP(model, **config)
@@ -892,7 +892,7 @@ def benchmark_simple_linear_model(rank, args):
                         p.data = handle.get_tensor().to(torch.float16)
                     m.ssd_buffer.to_disk()
         else:
-           model = model.half().cuda()
+            model = model.half().cuda()
 
         tk.print_time("FSDP_MODEL", 1.0)
         monitor_memory(rank, result, "FSDP_MODEL")

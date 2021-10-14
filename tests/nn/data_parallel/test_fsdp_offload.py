@@ -298,6 +298,7 @@ class TestSsdLoading(DistributedTest):
             model = FullyShardedDataParallel(NestedWrappedModule(group, wrap_everything=True, wrapper_config=config))
         else:
             model = FullyShardedDataParallel(model, **config)
+
         if not config["ssd_offload"]:
             model = model.cuda()
         self._eval_with_config(model, autocast=config["mixed_precision"])
@@ -308,7 +309,7 @@ class TestSsdLoading(DistributedTest):
         # state_dict = model.local_state_dict()
         # model.load_local_state_dict(state_dict)
 
-        self._eval_with_config(model, config["mixed_precision"])
+        # self._eval_with_config(model, config["mixed_precision"])
 
         fileList = glob.glob(os.getcwd() + "/*_rank*")
         for file in fileList:
