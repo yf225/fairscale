@@ -8,7 +8,6 @@ from typing import IO, Any, BinaryIO, Callable, Dict, Iterator, List, Optional, 
 
 import numpy as np
 import torch
-# from torch.optim import _functional as F
 from torch.serialization import DEFAULT_PROTOCOL as DEFAULT_PROTOCOL
 from torch.utils._pytree import tree_map
 

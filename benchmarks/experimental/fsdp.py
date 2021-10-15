@@ -5,7 +5,6 @@
 
 import argparse
 from collections import defaultdict
-import contextlib
 import functools
 from functools import reduce
 import gc
@@ -13,11 +12,8 @@ import glob
 import logging
 import math
 import operator
-import operator as op
 import os
-import re
 import time
-from typing import Any, Dict, Optional, Union
 
 import numpy as np
 import psutil
@@ -32,7 +28,6 @@ from benchmarks.datasets.wikitext2_data import get_synthetic_dataloaders as get_
 from benchmarks.golden_configs.lm_wikitext2 import Pipe as lm_wikitext2
 from benchmarks.models import transformer_lm
 from fairscale.nn import auto_wrap, default_auto_wrap_policy, enable_wrap
-from fairscale.nn.data_parallel import FullyShardedDataParallel
 from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
 
 RPC_PORT = 29501
@@ -156,17 +151,6 @@ def monitor_memory(rank, result, key):
 
     result[key + "_memory_reserved_KB"] = torch.cuda.memory_reserved(rank) / 1024
     result[key + "_max_memory_reserved_KB"] = torch.cuda.max_memory_reserved(rank) / 1024
-
-
-def log_tensors_in_memory(label):
-    gc.collect()
-    if torch.distributed.get_rank() == 0:
-        for obj in gc.get_objects():
-            try:
-                if torch.is_tensor(obj) or (hasattr(obj, "data") and torch.is_tensor(obj.data)):
-                    print(label, type(obj), type(obj).__name__, obj.size(), obj.device, obj.storage().size())
-            except:
-                pass
 
 
 def train(model_config, model, benchmark_config, model_specs, args):
@@ -617,7 +601,6 @@ def benchmark_simple_linear_model(rank, args):
         return result
 
     ssd_result = benchmark_fsdp_ssd_offload()
-    log_tensors_in_memory("eval_ends")
     torch.cuda.reset_peak_memory_stats()
     orig_result = benchmark_fsdp_vanilla()
     diff_result = {}
