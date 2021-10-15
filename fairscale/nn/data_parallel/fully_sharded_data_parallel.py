@@ -373,7 +373,7 @@ class FullyShardedDataParallel(nn.Module):
         self._shard_parameters_()
 
         self.training_state = TrainingState.IDLE
-        
+
         # Make sure all parameters are sharded.
         for n, p in self.named_parameters():
             assert hasattr(p, "_is_sharded"), f"found unsharded parameter: {n} ; {p.size()}"
@@ -1276,9 +1276,9 @@ class FullyShardedDataParallel(nn.Module):
         #     cache. Update this when that's available.
         if self.clear_autocast_cache:
             torch.clear_autocast_cache()
-        
+
         self._free_ssd_offload()
-        
+
         return outputs
 
     @torch.no_grad()

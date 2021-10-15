@@ -1,6 +1,8 @@
-import torch
-import psutil
 import gc
+
+import psutil
+import torch
+
 
 def log_memory_stats(key, filename):
     result = {}
@@ -16,6 +18,7 @@ def log_memory_stats(key, filename):
         result[key + "_max_memory_reserved_GB"] = torch.cuda.max_memory_reserved(0) / 2 ** 30
 
         print(f"{result}")
+
 
 def log_tensors_in_memory(label):
     gc.collect()
