@@ -305,11 +305,10 @@ class TestSsdLoading(DistributedTest):
 
         # With SSD offload only local_state_dict will work. We can support global
         # state dict if we think it is necessary.
-        # TODO(anj): Fix error with SSD offload
-        # state_dict = model.local_state_dict()
-        # model.load_local_state_dict(state_dict)
+        state_dict = model.local_state_dict()
+        model.load_local_state_dict(state_dict)
 
-        # self._eval_with_config(model, config["mixed_precision"])
+        self._eval_with_config(model, config["mixed_precision"])
 
         fileList = glob.glob(os.getcwd() + "/*_rank*")
         for file in fileList:
