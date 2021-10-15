@@ -160,9 +160,10 @@ def test_torch_fuse_all():
     shape = ((5, 3), (3, 7))
     large = True
     if large:
-        shape = ((4 * 2048, 4096), (4096, 256000))
+        shape = ((4 * 2048, 4096), (4096, 256008))
+    print("\nshapes are", shape)
     input, weight, target = get_data(shape, dtype=torch.float16)
-    k = TorchFuseAllTiled(weight, tile_factor=2)
+    k = TorchFuseAllTiled(weight, tile_factor=16)
 
     o = k(input, target)
     o.backward()

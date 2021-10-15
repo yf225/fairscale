@@ -141,7 +141,7 @@ class TorchFuseAllTiled(nn.Module):
         self.proj_weight = proj_weight
         self.tf_in, self.tf_w, self.tf_target = tile_factor, tile_factor, tile_factor
         self.fp_max = False
-        self.fp_sum = True  # This is important when tensors are large. Otherwise, you get inf.
+        self.fp_sum = True  # This is esp. important when tensors are large. Otherwise, you get inf.
         self.fp_target = False
         self.log_softmax = True
         self.reduction = "sum"
@@ -203,13 +203,21 @@ class TorchFuseAllTiled(nn.Module):
             target = target.reshape(-1)
         tokens, d_model = input.shape
 
+        enable_checkpoint = False
+
         # Get maxs
-        maxs = checkpoint(self.get_maxs, input)
+        if enable_checkpoint:
+            maxs = checkpoint(self.get_maxs, input)
+        else:
+            maxs = self.get_maxs(input)
         maxs_tensor = torch.cat(maxs)  # (tokens,)
         assert maxs_tensor.shape == (tokens,)
 
         # Get sums.
-        sums = checkpoint(self.get_sums, input, maxs)
+        if enable_checkpoint:
+            sums = checkpoint(self.get_sums, input, maxs)
+        else:
+            sums = self.get_sums(input, maxs)
         sums = torch.cat(sums)  # (tokens,)
         assert sums.shape == (tokens,)
 
