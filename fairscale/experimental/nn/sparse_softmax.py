@@ -4,12 +4,11 @@
 # LICENSE file in the root directory of this source tree.
 
 
-from typing import Any, List, Tuple
+from typing import Any, Tuple
 
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 
 from .triton import fused_forward  # type: ignore
 
@@ -147,12 +146,25 @@ class TorchFuseAllTiled(nn.Module):
         self.reduction = "sum"
         assert self.reduction in ["sum", "mean", "none"]
 
-    def get_maxs(self, input: torch.Tensor) -> List[torch.Tensor]:
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        assert kwargs == {}
+        input, target = input
+        assert isinstance(input, torch.Tensor)
+        assert isinstance(target, torch.Tensor)
+        assert input.requires_grad
+        if len(input.shape) == 3:
+            input = input.reshape(-1, input.shape[2])
+        if len(target.shape) == 2:
+            target = target.reshape(-1)
+
         tokens, d_model = input.shape
         vocab, d2 = self.proj_weight.shape
         assert d_model == d2
         inputs = torch.split(input, next_power_of_2_or_max(tokens // self.tf_in, tokens), 0)
         weights = torch.split(self.proj_weight, next_power_of_2_or_max(vocab // self.tf_w, vocab), 0)
+
+        # Get maxs
+        # maxs, maxs_tensor = self.get_maxs(inputs, weights)
         maxs = []
         for i in inputs:
             m = None  # max with (tokens_tile,) shape
@@ -167,14 +179,11 @@ class TorchFuseAllTiled(nn.Module):
                     m = torch.max(m, _m)
             assert m is not None
             maxs.append(m)  # (tokens_tile,)
-        return maxs
+        maxs_tensor = torch.cat(maxs)  # (tokens,)
+        assert maxs_tensor.shape == (tokens,)
 
-    def get_sums(self, input: torch.Tensor, maxs: List[torch.Tensor]) -> List[torch.Tensor]:
-        tokens, d_model = input.shape
-        vocab, d2 = self.proj_weight.shape
-        assert d_model == d2
-        inputs = torch.split(input, next_power_of_2_or_max(tokens // self.tf_in, tokens), 0)
-        weights = torch.split(self.proj_weight, next_power_of_2_or_max(vocab // self.tf_w, vocab), 0)
+        # Get sums.
+        # sums = self.get_sums(inputs, weights, maxs)
         sums = []
         for idx, i in enumerate(inputs):
             s = None  # sum with (tokens_tile,) shape
@@ -189,35 +198,6 @@ class TorchFuseAllTiled(nn.Module):
                     s += _s
             assert s is not None
             sums.append(s)  # (tokens_tile,)
-        return sums
-
-    def forward(self, *input: Any, **kwargs: Any) -> Any:
-        assert kwargs == {}
-        input, target = input
-        assert isinstance(input, torch.Tensor)
-        assert isinstance(target, torch.Tensor)
-        assert input.requires_grad
-        if len(input.shape) == 3:
-            input = input.reshape(-1, input.shape[2])
-        if len(target.shape) == 2:
-            target = target.reshape(-1)
-        tokens, d_model = input.shape
-
-        enable_checkpoint = False
-
-        # Get maxs
-        if enable_checkpoint:
-            maxs = checkpoint(self.get_maxs, input)
-        else:
-            maxs = self.get_maxs(input)
-        maxs_tensor = torch.cat(maxs)  # (tokens,)
-        assert maxs_tensor.shape == (tokens,)
-
-        # Get sums.
-        if enable_checkpoint:
-            sums = checkpoint(self.get_sums, input, maxs)
-        else:
-            sums = self.get_sums(input, maxs)
         sums = torch.cat(sums)  # (tokens,)
         assert sums.shape == (tokens,)
 

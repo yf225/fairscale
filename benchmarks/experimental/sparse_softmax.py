@@ -40,13 +40,13 @@ SHAPES = [
     # ("24k_4k_50k", (12 * 2048, 4 * 1024), (4 * 1024, 50 * 1024)),
     # ("8k_4k_256k", (4 * 2048, 4 * 1024), (4 * 1024, 256 * 1024)),
     # ("8k_4k_256008", (4 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
-    ("xk_4k_256008", (12 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
+    ("xk_4k_256008", (8 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
 ]
 KERNELS = [
     # BaselineSoftmax,
-    # BaselineSoftmaxNllLoss,
+    # BaselineSoftmaxNllLoss,  # bs2=16G, bs4=28G, bs8=illegal mem
     # TritonFuseAll,
-    TorchFuseAllTiled,
+    TorchFuseAllTiled,  # bs2=12G, bs4=16G, bs8=23.4G
     #    TritonSoftmax,
     #    InplaceSoftmax,
     # TiledSoftmax,
