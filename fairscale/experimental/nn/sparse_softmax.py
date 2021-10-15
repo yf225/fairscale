@@ -25,6 +25,20 @@ except ImportError:
     triton_softmax = None
 
 
+def next_power_of_2_or_max(n: int, max_n: int) -> int:
+    """Return the smallest power of 2 greater than or equal to n"""
+    n -= 1
+    n |= n >> 1
+    n |= n >> 2
+    n |= n >> 4
+    n |= n >> 8
+    n |= n >> 16
+    n += 1
+    if n > max_n:
+        return max_n
+    return n
+
+
 def get_data(
     shape: Tuple[Tuple[int, int], Tuple[int, int]], dtype: torch.dtype = torch.float16, device: str = "cuda"
 ) -> Tuple[torch.Tensor, torch.nn.Parameter, torch.Tensor]:
@@ -89,7 +103,7 @@ class BaselineSoftmaxNllLoss(BaselineSoftmax):
             x = F.softmax(x, dim=-1, dtype=torch.float32)
         assert x.dtype == torch.float32
         x = F.nll_loss(x, target)
-        x = x.mean()
+        x = x.sum()
         return x
 
 
@@ -124,9 +138,7 @@ class TorchFuseAllTiled(nn.Module):
 
     def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 16):  # k is ignored.
         super().__init__()
-        vocab, d_model = proj_weight.shape
         self.proj_weight = proj_weight
-        self.weights = torch.split(proj_weight, vocab // tile_factor, 0)
         self.tile_factor = tile_factor
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
@@ -134,17 +146,25 @@ class TorchFuseAllTiled(nn.Module):
         input, target = input
         assert isinstance(input, torch.Tensor)
         assert isinstance(target, torch.Tensor)
+        if len(input.shape) == 3:
+            input = input.reshape(-1, input.shape[2])
+        if len(target.shape) == 2:
+            target = target.reshape(-1)
         tokens, d_model = input.shape
-        inputs = torch.split(input, tokens // self.tile_factor, 0)
+        vocab, d2 = self.proj_weight.shape
+        assert d_model == d2
+        inputs = torch.split(input, next_power_of_2_or_max(tokens // self.tile_factor, tokens), 0)
+        weights = torch.split(self.proj_weight, next_power_of_2_or_max(vocab // self.tile_factor, vocab), 0)
         # Get maxs
         maxs = []
         for i in inputs:
             m = None  # max with (tokens_tile,) shape
-            for w in self.weights:
+            for w in weights:
+                _m = torch.matmul(i, w.T).float().max(dim=1)[0]
                 if m is None:
-                    m = torch.matmul(i, w.T).max(dim=1)[0]
+                    m = _m
                 else:
-                    m = torch.max(m, torch.matmul(i, w.T).max(dim=1)[0])
+                    m = torch.max(m, _m)
             maxs.append(m)  # (tokens_tile,)
         maxs_tensor = torch.cat(maxs)  # (tokens,)
         assert maxs_tensor.shape == (tokens,)
@@ -154,11 +174,12 @@ class TorchFuseAllTiled(nn.Module):
         sums = []
         for idx, i in enumerate(inputs):
             s = None  # sum with (tokens_tile,) shape
-            for w in self.weights:
+            for w in weights:
+                _s = (torch.matmul(i, w.T).float() - maxs[idx].reshape(-1, 1)).exp().sum(dim=1)
                 if s is None:
-                    s = (torch.matmul(i, w.T) - maxs[idx].reshape(-1, 1)).exp().sum(dim=1)
+                    s = _s
                 else:
-                    s += (torch.matmul(i, w.T) - maxs[idx].reshape(-1, 1)).exp().sum(dim=1)
+                    s += _s
             sums.append(s)  # (tokens_tile,)
         sums = torch.cat(sums)  # (tokens,)
         assert sums.shape == (tokens,)
@@ -166,8 +187,8 @@ class TorchFuseAllTiled(nn.Module):
         # select weights for targets
         tw = self.proj_weight.gather(dim=0, index=target.reshape(target.shape[0], 1).expand(target.shape[0], d_model))
         assert tw.shape == (tokens, d_model)
-        result = -((((input * tw).sum(dim=1)) - maxs_tensor).exp() / sums).log()
-        return result.mean()
+        result = -((((input * tw).float().sum(dim=1)) - maxs_tensor).exp() / sums).log()
+        return result.sum()
 
 
 class TritonFuseAll(nn.Module):
