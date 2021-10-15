@@ -102,8 +102,7 @@ class BaselineSoftmaxNllLoss(BaselineSoftmax):
         else:
             x = F.softmax(x, dim=-1, dtype=torch.float32)
         assert x.dtype == torch.float32
-        x = F.nll_loss(x, target)
-        x = x.sum()
+        x = F.nll_loss(x, target, reduction="sum")
         return x
 
 
@@ -139,7 +138,13 @@ class TorchFuseAllTiled(nn.Module):
     def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 16):  # k is ignored.
         super().__init__()
         self.proj_weight = proj_weight
-        self.tile_factor = tile_factor
+        self.tf_in, self.tf_w, self.tf_target = tile_factor, tile_factor, tile_factor
+        self.fp_max = False
+        self.fp_sum = True  # This is important when tensors are large. Otherwise, you get inf.
+        self.fp_target = False
+        self.log_softmax = True
+        self.reduction = "sum"
+        assert self.reduction in ["sum", "mean", "none"]
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
@@ -153,14 +158,17 @@ class TorchFuseAllTiled(nn.Module):
         tokens, d_model = input.shape
         vocab, d2 = self.proj_weight.shape
         assert d_model == d2
-        inputs = torch.split(input, next_power_of_2_or_max(tokens // self.tile_factor, tokens), 0)
-        weights = torch.split(self.proj_weight, next_power_of_2_or_max(vocab // self.tile_factor, vocab), 0)
+        inputs = torch.split(input, next_power_of_2_or_max(tokens // self.tf_in, tokens), 0)
+        weights = torch.split(self.proj_weight, next_power_of_2_or_max(vocab // self.tf_w, vocab), 0)
         # Get maxs
         maxs = []
         for i in inputs:
             m = None  # max with (tokens_tile,) shape
             for w in weights:
-                _m = torch.matmul(i, w.T).float().max(dim=1)[0]
+                _m = torch.matmul(i, w.T)
+                if self.fp_max:
+                    _m = _m.float()
+                _m = _m.max(dim=1)[0]
                 if m is None:
                     m = _m
                 else:
@@ -169,13 +177,15 @@ class TorchFuseAllTiled(nn.Module):
         maxs_tensor = torch.cat(maxs)  # (tokens,)
         assert maxs_tensor.shape == (tokens,)
 
-        # Get sums. In fp16, due to accumulation, results will be slightly differ
-        # from untiled version.
+        # Get sums.
         sums = []
         for idx, i in enumerate(inputs):
             s = None  # sum with (tokens_tile,) shape
             for w in weights:
-                _s = (torch.matmul(i, w.T).float() - maxs[idx].reshape(-1, 1)).exp().sum(dim=1)
+                _s = torch.matmul(i, w.T)
+                if self.fp_sum:
+                    _s = _s.float()
+                _s = (_s - maxs[idx].reshape(-1, 1)).exp().sum(dim=1)
                 if s is None:
                     s = _s
                 else:
@@ -187,8 +197,18 @@ class TorchFuseAllTiled(nn.Module):
         # select weights for targets
         tw = self.proj_weight.gather(dim=0, index=target.reshape(target.shape[0], 1).expand(target.shape[0], d_model))
         assert tw.shape == (tokens, d_model)
-        result = -((((input * tw).float().sum(dim=1)) - maxs_tensor).exp() / sums).log()
-        return result.sum()
+        target_score = input * tw
+        if self.fp_target:
+            target_score = target_score.float()
+        result = ((target_score.sum(dim=1)) - maxs_tensor).exp() / sums
+        if self.log_softmax:
+            result = result.log()
+        result = -result
+        if self.reduction == "sum":
+            result = result.sum()
+        if self.reduction == "mean":
+            result = result.mean()
+        return result
 
 
 class TritonFuseAll(nn.Module):

@@ -158,6 +158,9 @@ def test_triton_fuse_all():
 @skip_if_no_cuda
 def test_torch_fuse_all():
     shape = ((5, 3), (3, 7))
+    large = True
+    if large:
+        shape = ((4 * 2048, 4096), (4096, 256000))
     input, weight, target = get_data(shape, dtype=torch.float16)
     k = TorchFuseAllTiled(weight, tile_factor=2)
 
