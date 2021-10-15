@@ -165,9 +165,11 @@ def test_torch_fuse_all():
     k = TorchFuseAllTiled(weight, tile_factor=2)
 
     o = k(input, target)
-    print(o, o.shape)
+    o.backward()
+    print(o, o.shape, weight.grad.norm())
+    weight.grad = None
 
     refk = BaselineSoftmaxNllLoss(weight)
     o = refk(input, target)
-    print(o, o.shape)
-    return
+    o.backward()
+    print(o, o.shape, weight.grad.norm())
