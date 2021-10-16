@@ -9,6 +9,7 @@ from typing import Any, Tuple
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from .triton import fused_forward  # type: ignore
 
@@ -146,6 +147,20 @@ class TorchFuseAllTiled(nn.Module):
         self.reduction = "sum"
         assert self.reduction in ["sum", "mean", "none"]
 
+    def get_max(self, i: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        _m = torch.matmul(i, w.T)
+        if self.fp_max:
+            _m = _m.float()
+        _m = _m.max(dim=1)[0]
+        return _m
+
+    def get_sum(self, i: torch.Tensor, w: torch.Tensor, maxs_at_idx: torch.Tensor) -> torch.Tensor:
+        _s = torch.matmul(i, w.T)
+        if self.fp_sum:
+            _s = _s.float()
+        _s = (_s - maxs_at_idx.reshape(-1, 1)).exp().sum(dim=1)
+        return _s
+
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
         input, target = input
@@ -164,15 +179,11 @@ class TorchFuseAllTiled(nn.Module):
         weights = torch.split(self.proj_weight, next_power_of_2_or_max(vocab // self.tf_w, vocab), 0)
 
         # Get maxs
-        # maxs, maxs_tensor = self.get_maxs(inputs, weights)
         maxs = []
         for i in inputs:
             m = None  # max with (tokens_tile,) shape
             for w in weights:
-                _m = torch.matmul(i, w.T)
-                if self.fp_max:
-                    _m = _m.float()
-                _m = _m.max(dim=1)[0]
+                _m = checkpoint(self.get_max, i, w)
                 if m is None:
                     m = _m
                 else:
@@ -183,15 +194,11 @@ class TorchFuseAllTiled(nn.Module):
         assert maxs_tensor.shape == (tokens,)
 
         # Get sums.
-        # sums = self.get_sums(inputs, weights, maxs)
         sums = []
         for idx, i in enumerate(inputs):
             s = None  # sum with (tokens_tile,) shape
             for w in weights:
-                _s = torch.matmul(i, w.T)
-                if self.fp_sum:
-                    _s = _s.float()
-                _s = (_s - maxs[idx].reshape(-1, 1)).exp().sum(dim=1)
+                _s = checkpoint(self.get_sum, i, w, maxs[idx])
                 if s is None:
                     s = _s
                 else:
