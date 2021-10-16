@@ -46,7 +46,7 @@ KERNELS = [
     # BaselineSoftmax,
     # BaselineSoftmaxNllLoss,  # bs2=16G, bs4=28G, bs6=illegal mem, bs8=illegal mem
     # TritonFuseAll,
-    TorchFuseAllTiled,  # bs2=12G, bs4=16G, bs8=23.4G, bs10=26.6G, bs12=OOM
+    TorchFuseAllTiled,  # bs2=12G, bs4=16G, bs8=23.4G, bs10=26.6G, bs12=OOM  (self.fp_sum=1)
     #    TritonSoftmax,
     #    InplaceSoftmax,
     # TiledSoftmax,

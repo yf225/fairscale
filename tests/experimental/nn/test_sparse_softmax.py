@@ -158,18 +158,19 @@ def test_triton_fuse_all():
 @skip_if_no_cuda
 def test_torch_fuse_all():
     shape = ((5, 3), (3, 7))
-    large = False
+    large = True
     if large:
         shape = ((4 * 2048, 4096), (4096, 256008))
     print("\nshapes are", shape)
 
     input, weight, target = get_data(shape, dtype=torch.float16)
-    k = TorchFuseAllTiled(weight, tile_factor=2)
+    k = TorchFuseAllTiled(weight, tile_factor=16)
 
     o = k(input, target)
     o.backward()
     print(o, o.shape, weight.grad.norm())
     print(weight.grad)
+    g1 = weight.grad.clone()
     weight.grad = None
 
     refk = BaselineSoftmaxNllLoss(weight)
@@ -177,3 +178,7 @@ def test_torch_fuse_all():
     o.backward()
     print(o, o.shape, weight.grad.norm())
     print(weight.grad)
+    g2 = weight.grad.clone()
+
+    diff = g1 - g2
+    print(diff.min(), diff.max())

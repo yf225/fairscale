@@ -139,9 +139,9 @@ class TorchFuseAllTiled(nn.Module):
         super().__init__()
         self.proj_weight = proj_weight
         self.tf_in, self.tf_w, self.tf_target = tile_factor, tile_factor, tile_factor
-        self.fp_max = False
+        self.fp_max = True
         self.fp_sum = True  # This is esp. important when tensors are large. Otherwise, you get inf.
-        self.fp_target = False
+        self.fp_target = True
         self.log_softmax = True
         self.reduction = "sum"
         assert self.reduction in ["sum", "mean", "none"]
