@@ -229,7 +229,7 @@ class SsdTensorHandle(torch.Tensor):
         else:
             read(tensor, self.filename, self.offset * tensor.element_size())
 
-    __torch_function__ = torch._C._disabled_torch_function_impl
+    __torch_function__ = torch._C._disabled_torch_function_impl  # type: ignore
 
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
@@ -238,7 +238,7 @@ class SsdTensorHandle(torch.Tensor):
         def unwrap(e):
             if isinstance(e, SsdTensorHandle):
                 t = e.to_tensor()
-                ssd_tensor_handles.append((e, t._version))
+                ssd_tensor_handles.append((e, t._version))  # type: ignore
                 return t
             else:
                 return e
@@ -261,7 +261,7 @@ class SsdTensorHandle(torch.Tensor):
 # Class supporting a single SSD file backing one or more tensors
 class SsdBuffer:
     def __init__(self, num_elems: int, filename: str, dtype: torch.dtype = torch.float32) -> None:
-        self.buffer: Optional[torch.Tensor] = torch.empty((num_elems,), dtype=dtype)
+        self.buffer: torch.Tensor = torch.empty((num_elems,), dtype=dtype)
         self.filename = filename
         self.offset = 0
         self.tensors: Dict[int, SsdTensorHandle] = {}
