@@ -9,8 +9,12 @@ from typing import IO, Any, BinaryIO, Callable, Dict, Iterator, List, Optional, 
 import numpy as np
 import torch
 from torch.serialization import DEFAULT_PROTOCOL as DEFAULT_PROTOCOL
-from torch.utils._pytree import tree_map
 
+try:
+    from torch.utils._pytree import tree_map
+except ImportError:
+    # The PyTorch version(<1.9) we test with may not support the tree_map API.
+    pass
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 
 
@@ -229,7 +233,7 @@ class SsdTensorHandle(torch.Tensor):
         else:
             read(tensor, self.filename, self.offset * tensor.element_size())
 
-    __torch_function__ = torch._C._disabled_torch_function_impl
+    __torch_function__ = torch._C._disabled_torch_function_impl  # type: ignore
 
     @classmethod
     def __torch_dispatch__(cls, func, types, args=(), kwargs=None):  # type: ignore
