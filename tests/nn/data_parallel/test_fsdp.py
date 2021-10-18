@@ -13,7 +13,6 @@ import unittest
 from unittest import mock
 
 from parameterized import parameterized
-import pytest
 import torch
 from torch import nn
 import torch.distributed
