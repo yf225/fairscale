@@ -33,8 +33,8 @@ def test_train_and_eval_with_checkpointing():
 
 
 @skip_if_single_gpu
-def test_eval_with_checkpointing():
-    if torch_version() < (1, 6, 0):
+def test_ssd_eval_with_checkpointing():
+    if torch_version() < (1, 10, 0):
         pytest.skip("older pytorch doesn't support reduce_scatter")
 
     world_size = 2

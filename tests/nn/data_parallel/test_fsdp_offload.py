@@ -23,21 +23,13 @@ from fairscale.nn.data_parallel import FullyShardedDataParallel, TrainingState
 from fairscale.utils import torch_version
 from fairscale.utils.testing import dist_init, rmf, spawn_for_all_world_sizes
 
+
+# Note: We need the nightly version for SSD offload to work. Hence I am checking for the next PyTorch release.
+pytestmark = pytest.mark.skipif(torch_version() < (1, 10, 0), reason="requires torch version >= 1.10.0")
+
+
 # How to use remote-pdb: https://gist.github.com/sshleifer/9d43351957179c13606e015b072927d4
 # All helper functions called by spawn must be either @classmethod, @staticmethod
-
-
-class TimeKeeper:
-    def __init__(self):
-        self.start_time = time.time()
-
-    def print_time(self, s: str, wait_time: float = 5.0):
-        cur_time = time.time()
-        print(f"@time: {cur_time - self.start_time:0.2f} {s}")
-        time.sleep(wait_time)
-
-
-tk = TimeKeeper()
 
 
 class DistributedTest(unittest.TestCase):
