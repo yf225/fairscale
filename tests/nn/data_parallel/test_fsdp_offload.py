@@ -23,7 +23,6 @@ from fairscale.nn.data_parallel import FullyShardedDataParallel, TrainingState
 from fairscale.utils import torch_version
 from fairscale.utils.testing import dist_init, rmf, spawn_for_all_world_sizes
 
-
 # Note: We need the nightly version for SSD offload to work. Hence I am checking for the next PyTorch release.
 pytestmark = pytest.mark.skipif(torch_version() < (1, 10, 0), reason="requires torch version >= 1.10.0")
 

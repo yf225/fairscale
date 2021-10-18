@@ -17,7 +17,6 @@ import torch
 
 import fairscale.experimental.nn.ssd_offload as so
 
-
 pytestmark = pytest.mark.skipif(torch_version() < (1, 10, 0), reason="requires torch version >= 1.10.0")
 
 
