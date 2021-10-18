@@ -16,8 +16,10 @@ import pytest
 import torch
 
 import fairscale.experimental.nn.ssd_offload as so
+from fairscale.utils import torch_version
 
-pytestmark = pytest.mark.skipif(torch_version() < (1, 10, 0), reason="requires torch version >= 1.10.0")
+# Note: We need the nightly version for SSD offload to work. Hence I am checking for the next PyTorch release.
+pytestmark = pytest.mark.skipif(torch_version() < (1, 11, 0), reason="requires torch version >= 1.11.0")
 
 
 def _init():

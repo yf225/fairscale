@@ -39,7 +39,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
-import fairscale.experimental.nn.ssd_offload as ssd_offload
+try:
+    import fairscale.experimental.nn.ssd_offload as ssd_offload  # type: ignore
+except ImportError:
+    # The PyTorch version required
+    pass
+
 from fairscale.nn.misc import FlattenParamsWrapper
 from fairscale.nn.wrap import auto_wrap, config_auto_wrap_policy, enable_wrap
 from fairscale.utils.containers import apply_to_tensors

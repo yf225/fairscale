@@ -29,6 +29,7 @@ from benchmarks.golden_configs.lm_wikitext2 import Pipe as lm_wikitext2
 from benchmarks.models import transformer_lm
 from fairscale.nn import auto_wrap, default_auto_wrap_policy, enable_wrap
 from fairscale.nn.data_parallel import FullyShardedDataParallel as FSDP
+from fairscale.utils import torch_version
 
 RPC_PORT = 29501
 
@@ -674,6 +675,10 @@ parser.add_argument("--skip_flatten_parameters", action="store_true", default=Fa
 parser.add_argument("--ssd_offload", action="store_true", default=False, help="Use ssd_offload FSDP")
 
 if __name__ == "__main__":
+    if torch_version() < (1, 11, 0):
+        print(f"FSDP + ssd_offload requires a torch version of >= 1.11.0")
+        sys.exit(0)
+
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO if not args.debug else logging.DEBUG)
 
