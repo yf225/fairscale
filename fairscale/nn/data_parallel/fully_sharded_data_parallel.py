@@ -619,7 +619,7 @@ class FullyShardedDataParallel(nn.Module):
                 self.numel_padded_per_param.append(0)
                 if self.ssd_offload:
                     p._shard_size = p.data.size()  # type: ignore
-                    p._handle = self.ssd_buffer.insert(p.data)
+                    p._handle = self.ssd_buffer.insert(p.data)  # type: ignore
                     free_storage_(p.data)
                 continue
             p._is_sharded = True
@@ -629,7 +629,7 @@ class FullyShardedDataParallel(nn.Module):
                 orig_data = p.data
                 p.data, num_padded = self._get_shard(p.data)
                 p._shard_size = p.data.size()  # type: ignore
-                p._handle = self.ssd_buffer.insert(p.data)
+                p._handle = self.ssd_buffer.insert(p.data)  # type: ignore
                 del orig_data
                 self.numel_padded_per_param.append(num_padded)
                 free_storage_(p.data)
@@ -1014,7 +1014,7 @@ class FullyShardedDataParallel(nn.Module):
                     if self.ssd_offload:
                         for p in self.params:
                             p._shard_size = p.data.size()  # type: ignore
-                            p._handle = self.ssd_buffer.insert(p.data)
+                            p._handle = self.ssd_buffer.insert(p.data)  # type: ignore
                             free_storage_(p.data)
                         self.ssd_buffer.to_disk()
                     self.training_state = TrainingState.IDLE
@@ -1128,6 +1128,7 @@ class FullyShardedDataParallel(nn.Module):
             )
             free_storage_(p._full_param_padded)
 
+        # TODO(anj): We need to condition this on training to avoid extra memory usage.
         if self.move_grads_to_cpu and not self.ssd_offload:
             # We can optionally move the grad shard to CPU during the backward
             # pass. In this case, it's important to pre-allocate the CPU grad
@@ -1218,7 +1219,7 @@ class FullyShardedDataParallel(nn.Module):
 
             # The params are on disk and need to be moved to the CPU.
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                p.data = handle.get_tensor().view(p._shard_size)
+                p.data = handle.get_tensor().view(p._shard_size)  # type: ignore
 
         self._lazy_init()
         # Start of a forward pass.
@@ -1281,7 +1282,7 @@ class FullyShardedDataParallel(nn.Module):
         return outputs
 
     @torch.no_grad()
-    def _free_ssd_offload(self):
+    def _free_ssd_offload(self) -> None:
         if self.ssd_offload:
             if list(self.ssd_buffer.buffer.size()) == [1]:
                 return
@@ -1674,12 +1675,13 @@ class FullyShardedDataParallel(nn.Module):
                 p.data = custom_output_tensor
                 output_tensors.append((p.data, True))
             elif not p._is_sharded:
-                if (self.mixed_precision and not force_full_precision) or self.move_params_to_cpu:
+                if self.mixed_precision and not force_full_precision:
                     assert p._fp16_shard is not None
                     p.data = p._fp16_shard
                     output_tensors.append((p.data, True))
                 else:
                     # Here p.data == p._fp32_shard, so it's not safe to free.
+                    # assert p.data == torch.float32
                     output_tensors.append((p.data, False))
             else:
                 p.data = p._full_param_padded
@@ -1693,7 +1695,7 @@ class FullyShardedDataParallel(nn.Module):
 
             # The params are on disk and need to be moved to the CPU.
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                p._fp32_shard = handle.get_tensor().view(p._shard_size)
+                p._fp32_shard = handle.get_tensor().view(p._shard_size)  # type: ignore
                 p.data = p._fp32_shard
 
         # Early exit if we already have full params and don't need full precision.
@@ -1704,7 +1706,7 @@ class FullyShardedDataParallel(nn.Module):
 
         self.has_full_params = True
         with torch.cuda.stream(self._streams["all_gather"]):
-            if (self.mixed_precision and not force_full_precision) or self.move_params_to_cpu or self.ssd_offload:
+            if (self.mixed_precision or self.move_params_to_cpu) and not force_full_precision:
                 self._cast_fp32_param_shards_to_fp16()
 
             for p in self.params:
@@ -1734,7 +1736,6 @@ class FullyShardedDataParallel(nn.Module):
                     else:
                         chunks = list(output_tensor.chunk(self.world_size))
                         dist.all_gather(chunks, p_data, group=self.process_group)
-
                     # Set p.data = output_tensor (with padding trimmed)
                     update_p_data(output_tensor)
 

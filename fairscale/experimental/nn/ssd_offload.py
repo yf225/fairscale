@@ -145,7 +145,7 @@ class SsdTensorHandle(torch.Tensor):
     def __new__(
         cls: SsdTensorHandle, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = False
     ) -> SsdTensorHandle:
-        r = torch.Tensor._make_wrapper_subclass(cls, shape, dtype=dtype, requires_grad=requires_grad)
+        r = torch.Tensor._make_wrapper_subclass(cls, shape, dtype=dtype, requires_grad=requires_grad)  # type: ignore
         return r
 
     def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool) -> None:
@@ -229,13 +229,13 @@ class SsdTensorHandle(torch.Tensor):
         else:
             read(tensor, self.filename, self.offset * tensor.element_size())
 
-    __torch_function__ = torch._C._disabled_torch_function_impl  # type: ignore
+    __torch_function__ = torch._C._disabled_torch_function_impl
 
     @classmethod
-    def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
+    def __torch_dispatch__(cls, func, types, args=(), kwargs=None):  # type: ignore
         ssd_tensor_handles = []
 
-        def unwrap(e):
+        def unwrap(e: Any) -> torch.Tensor:
             if isinstance(e, SsdTensorHandle):
                 t = e.to_tensor()
                 ssd_tensor_handles.append((e, t._version))  # type: ignore
@@ -342,12 +342,12 @@ class SsdParameter(torch.nn.Parameter, SsdTensorHandle):
     def __new__(
         cls: SsdParameter, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = True
     ) -> SsdParameter:
-        r = SsdTensorHandle._make_wrapper_subclass(cls, shape, dtype=dtype, requires_grad=requires_grad)
+        r = SsdTensorHandle._make_wrapper_subclass(cls, shape, dtype=dtype, requires_grad=requires_grad)  # type: ignore
 
         return r
 
     def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = True) -> None:
-        super(SsdParameter, self).__init__(shape, dtype, requires_grad)
+        super(SsdParameter, self).__init__(shape, dtype, requires_grad)  # type: ignore
 
 
 class DisableMemoizationPicklerModule:

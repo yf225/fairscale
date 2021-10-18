@@ -539,7 +539,7 @@ class TestNoGrad(DistributedTest):
         assert objects_are_equal(ref_output, no_grad_output, raise_exception=True)
 
 
-KEYS = ["ssd_offload", "flatten_parameters"]
+KEYS = ["flatten_parameters"]
 CONFIG = [[dict(zip(KEYS, config))] for config in itertools.product([True, False], repeat=len(KEYS))]
 
 
@@ -557,15 +557,6 @@ class TestModuleProperties(DistributedTest):
 
         # Train the model for 1 step.
         model = self.get_wrapped_model(group, cuda_first=False, config=config)
-        if config.get("ssd_offload", False):
-            with pytest.raises(RuntimeError):
-                for _ in model.named_parameters():
-                    pass
-            with pytest.raises(RuntimeError):
-                for _ in model.parameters():
-                    pass
-            # Early return for ssd_offload since we don't support parameters() or named_parameters().
-            return
 
         self._train_for_several_steps(model, 1, autocast=False)
 
