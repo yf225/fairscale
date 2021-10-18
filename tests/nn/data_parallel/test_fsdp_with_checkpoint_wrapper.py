@@ -103,7 +103,6 @@ def _test_func_with_ssd_offload(rank, world_size, tempfile_name, unused):
     with torch.no_grad():
         input = torch.randn(2, 3).cuda()
         model(input).sum()
-    _check_fwd_counter(model, 0)
 
     teardown()
 
