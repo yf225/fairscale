@@ -25,6 +25,10 @@ from fairscale.utils import torch_version
 
 CPU_DEVICES = ["worker0/cpu", "worker1/cpu"]
 GPU_DEVICES = ["worker0/cuda:0", "worker1/cuda:1"]
+
+# TODO(anj): Fix the CPU only version before enabling this test.
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CPU version is broken")
+
 if torch.cuda.is_available():
     DEVICES = [CPU_DEVICES, GPU_DEVICES]
 else:

@@ -511,14 +511,14 @@ jobs:
       # Cache the venv directory that contains dependencies
       - restore_cache:
           keys:
-            - cache-key-py38-gpu-pytorch-nightly-111-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+            - cache-key-py38-gpu-pytorch-nightly-112-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
       - <<: *install_dep_pytorch_nightly
 
       - save_cache:
           paths:
             - ~/venv
-          key: cache-key-py38-gpu-pytorch-nightly-111-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
+          key: cache-key-py38-gpu-pytorch-nightly-112-{{ checksum "setup.py"}}-{{ checksum "requirements-test.txt"}}
 
       - <<: *install_repo
 
@@ -621,7 +621,7 @@ jobs:
 
 
 workflows:
-  version: 4
+  version: 2
   build:
     jobs:
       - cpu_tests_py37
