@@ -621,7 +621,7 @@ jobs:
 
 
 workflows:
-  version: 3
+  version: 4
   build:
     jobs:
       - cpu_tests_py37
