@@ -40,7 +40,7 @@ import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
 try:
-    import fairscale.experimental.nn.ssd_offload as ssd_offload  # type: ignore
+    import fairscale.experimental.nn.ssd_offload as ssd_offload
 except ImportError:
     # The PyTorch version required
     pass
