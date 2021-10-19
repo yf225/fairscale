@@ -535,7 +535,7 @@ def benchmark_simple_linear_model(rank, args):
                     model = FSDP(model, **config)
             torch.distributed.barrier()
 
-        if args.ssd_offload:
+        if args.ssd_offload and args.full_fp16:
             for m in model.modules():  # includes self
                 if isinstance(m, FSDP):
                     m.ssd_buffer.from_disk(m.buffer_size)

@@ -85,8 +85,6 @@ class DistributedTest(unittest.TestCase):
             with torch.cuda.amp.autocast(enabled=autocast):
                 output = model(*input)
 
-            tk.print_time(f"eval step: {_}", 1.0)
-
     @staticmethod
     def get_wrapped_model(group, cuda_first=False, config={}, **model_kwargs) -> FullyShardedDataParallel:
         if cuda_first:
@@ -156,23 +154,24 @@ class TestSsdMemory(DistributedTest):
 
     @classmethod
     def _test_memory_benchmark(self, rank, group, config):
+        time_keeper = TimeKeeper()
 
         SIZE = 8 * 8
-        tk.print_time("START", 1.0)
+        time_keeper.print_time("START", 1.0)
         a = torch.empty(1)
         b = a.cuda()
         # wait for cuda to fully load
         time.sleep(5)
-        tk.print_time("INIT_CUDA", 1.0)
+        time_keeper.print_time("INIT_CUDA", 1.0)
         model = SimpleLinear(group, input_size=SIZE, output_size=SIZE, layers=4)
-        tk.print_time("CPU_MODEL", 1.0)
+        time_keeper.print_time("CPU_MODEL", 1.0)
 
         config["ssd_offload"] = True
         model = FullyShardedDataParallel(model, **config)
-        tk.print_time("FSDP_MODEL", 1.0)
+        time_keeper.print_time("FSDP_MODEL", 1.0)
 
         self._eval_for_several_steps(model, 1, autocast=False)
-        tk.print_time("TRAIN_1")
+        time_keeper.print_time("TRAIN_1")
 
         fileList = glob.glob(os.getcwd() + "/*_rank*")
         for file in fileList:
@@ -215,6 +214,16 @@ class SimpleLinear(nn.Module):
 
 KEYS = ["ssd_offload", "flatten_parameters"]
 CONFIG = [[dict(zip(KEYS, config))] for config in itertools.product([True, False], repeat=len(KEYS))]
+
+
+class TimeKeeper:
+    def __init__(self):
+        self.start_time = time.time()
+
+    def print_time(self, s: str, wait_time: float = 5.0):
+        cur_time = time.time()
+        print(f"@time: {cur_time - self.start_time:0.2f} {s}")
+        time.sleep(wait_time)
 
 
 class TestModuleProperties(DistributedTest):
