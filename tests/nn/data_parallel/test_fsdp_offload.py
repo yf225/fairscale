@@ -212,7 +212,7 @@ class SimpleLinear(nn.Module):
         loss.backward()
 
 
-KEYS = ["ssd_offload", "flatten_parameters"]
+KEYS = ["ssd_offload", "flatten_parameters", "mixed_precision", "move_params_to_cpu"]
 CONFIG = [[dict(zip(KEYS, config))] for config in itertools.product([True, False], repeat=len(KEYS))]
 
 
@@ -226,42 +226,6 @@ class TimeKeeper:
         time.sleep(wait_time)
 
 
-class TestModuleProperties(DistributedTest):
-    @parameterized.expand(CONFIG, name_func=rename_test)
-    def test_named_parameters(self, config):
-        test_fn = functools.partial(self._test_named_params, config=config)
-        spawn_and_init(test_fn)
-
-    @classmethod
-    def _test_named_params(self, rank, group, config):
-        # Get the named parameters before wrapping.
-        before_wrap_model = TransformerWithSharedParams(group)
-        before_wrap_params = before_wrap_model.named_parameters()
-
-        # Train the model for 1 step.
-        model = self.get_wrapped_model(group, cuda_first=False, config=config)
-
-        self._train_for_several_steps(model, 1, autocast=False)
-
-        # Get the named parameters after wrapping to compare.
-        after_wrap_params = model.named_parameters()
-
-        if not config.get("flatten_parameters", False):
-            for before_nm, after_nm in zip(before_wrap_params, after_wrap_params):
-                assert before_nm[0] == after_nm[0]
-        else:
-            named_params_flat = [p for p in after_wrap_params][0][0]
-            assert "flat_param_0" in named_params_flat
-
-        # Compare name and size under the `summon_full_params` context.
-        with model.summon_full_params():
-            after_wrap_params = model.named_parameters()
-
-            for before_nm, after_nm_original in zip(before_wrap_params, after_wrap_params):
-                assert before_nm[0] == after_nm_original[0]
-                torch.testing.assert_allclose(before_nm[1].shape, after_nm_original[1].cpu().shape)
-
-
 class TestSsdLoading(DistributedTest):
     def test_ssd_offloading_train_simple_param(self):
         test_fn = functools.partial(self._test_ssd_offload_train_simple_param)
@@ -272,12 +236,6 @@ class TestSsdLoading(DistributedTest):
         # By not spawning it is easier to gdb into the stack.
         test_fn = functools.partial(self._test_ssd_offload_train_fsdp)
         spawn_and_init(test_fn)
-        # import tempfile
-
-        # test_fn = functools.partial(self._test_ssd_offload_train_fsdp)
-        # dist_init(0, 1, tempfile.mkstemp()[1], tempfile.mkstemp()[1])
-        # group = torch.distributed.new_group()
-        # test_fn(0, group)
 
     def test_ssd_offloading_train_simple(self):
         test_fn = functools.partial(self._test_ssd_offload_train_simple)
@@ -395,7 +353,7 @@ class TestSsdLoading(DistributedTest):
         SIZE = 16 * 16
 
         config = {}
-        config["ssd_offload"] = False
+        config["ssd_offload"] = True
         config["mixed_precision"] = False
         model = FullyShardedDataParallel(SimpleLinear(group, input_size=SIZE, output_size=SIZE, layers=4), **config)
         if not config["ssd_offload"]:
@@ -411,10 +369,7 @@ class TestSsdLoading(DistributedTest):
 
         model.module.run_backward(loss)
 
-        print(f"param before {[p for p in model.parameters()]}")
-        print(f"grad before {[p.grad for p in model.parameters()]}")
         optim.step()
-        print(f"param after {[p for p in model.parameters()]}")
 
         if isinstance(model, FullyShardedDataParallel):
             model.assert_state(TrainingState.IDLE)
