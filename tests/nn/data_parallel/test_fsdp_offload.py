@@ -226,6 +226,42 @@ class TimeKeeper:
         time.sleep(wait_time)
 
 
+class TestModuleProperties(DistributedTest):
+    @parameterized.expand(CONFIG, name_func=rename_test)
+    def test_named_parameters(self, config):
+        test_fn = functools.partial(self._test_named_params, config=config)
+        spawn_and_init(test_fn)
+
+    @classmethod
+    def _test_named_params(self, rank, group, config):
+        # Get the named parameters before wrapping.
+        before_wrap_model = TransformerWithSharedParams(group)
+        before_wrap_params = before_wrap_model.named_parameters()
+
+        # Train the model for 1 step.
+        model = self.get_wrapped_model(group, cuda_first=False, config=config)
+
+        self._eval_with_config(model, autocast=False)
+
+        # Get the named parameters after wrapping to compare.
+        after_wrap_params = model.named_parameters()
+
+        if not config.get("flatten_parameters", False):
+            for before_nm, after_nm in zip(before_wrap_params, after_wrap_params):
+                assert before_nm[0] == after_nm[0]
+        else:
+            named_params_flat = [p for p in after_wrap_params][0][0]
+            assert "flat_param_0" in named_params_flat
+
+        # Compare name and size under the `summon_full_params` context.
+        with model.summon_full_params():
+            after_wrap_params = model.named_parameters()
+
+            for before_nm, after_nm_original in zip(before_wrap_params, after_wrap_params):
+                assert before_nm[0] == after_nm_original[0]
+                torch.testing.assert_allclose(before_nm[1].shape, after_nm_original[1].cpu().shape)
+
+
 class TestSsdLoading(DistributedTest):
     def test_ssd_offloading_train_simple_param(self):
         test_fn = functools.partial(self._test_ssd_offload_train_simple_param)
@@ -344,8 +380,6 @@ class TestSsdLoading(DistributedTest):
 
             # make sure we are using the file version not the cached tensor
             ssd_handle.point_to_file(f.name, 0)
-            print(f"ssd_handle: {ssd_handle.to_tensor()}")
-            print(f"orig_copy: {orig_copy}")
             assert torch.equal(ssd_handle.to_tensor(), orig_copy)
 
     @classmethod

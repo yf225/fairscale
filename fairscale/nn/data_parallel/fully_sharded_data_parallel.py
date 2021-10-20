@@ -870,7 +870,7 @@ class FullyShardedDataParallel(nn.Module):
                 self.ssd_buffer.from_disk(self.buffer_size)
 
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                p.data = handle.get_tensor()
+                p.data = handle.get_tensor().view(p._shard_size)  # type: ignore
 
         try:
             yield
@@ -1295,7 +1295,6 @@ class FullyShardedDataParallel(nn.Module):
             if list(self.ssd_buffer.buffer.size()) == [1]:
                 return
             self.ssd_buffer.to_disk()
-        self.has_full_params = False
 
     def _register_pre_backward_hooks(self, outputs: Any) -> Any:
         """Register pre-backward hook to run before the wrapped module's
@@ -1335,7 +1334,6 @@ class FullyShardedDataParallel(nn.Module):
             # Note, both ``self._rebuild_full_params`` and ``self._use_full_params`` are
             # idempotent.  So in case they are called unnecessarily, they don't incur much
             # overhead.
-            print(f" {self.ssd_offload} {self.reshard_after_forward}")
             if self.ssd_offload or self.reshard_after_forward:
                 self._rebuild_full_params()
             else:
@@ -1691,7 +1689,6 @@ class FullyShardedDataParallel(nn.Module):
                     output_tensors.append((p.data, True))
                 else:
                     # Here p.data == p._fp32_shard, so it's not safe to free.
-                    # assert p.data == torch.float32
                     output_tensors.append((p.data, False))
             else:
                 p.data = p._full_param_padded
@@ -1699,14 +1696,15 @@ class FullyShardedDataParallel(nn.Module):
             # Trim any padding and reshape to match original size.
             p.data = p.data[: p._orig_size.numel()].view(p._orig_size)
 
-        if self.ssd_offload and list(self.ssd_buffer.buffer.size()) == [1]:
-            # TODO(anj): we have a similar check elsewhere. Should we do this automatically?
-            self.ssd_buffer.from_disk(self.buffer_size, dtype=self.compute_dtype)
+        if self.ssd_offload:
+            if list(self.ssd_buffer.buffer.size()) == [1]:
+                # TODO(anj): we have a similar check elsewhere. Should we do this automatically?
+                self.ssd_buffer.from_disk(self.buffer_size, dtype=self.compute_dtype)
 
-            # The params are on disk and need to be moved to the CPU.
-            for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                p._fp32_shard = handle.get_tensor().view(p._shard_size)  # type: ignore
-                p.data = p._fp32_shard
+                # The params are on disk and need to be moved to the CPU.
+                for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
+                    p._fp32_shard = handle.get_tensor().view(p._shard_size)  # type: ignore
+                    p.data = p._fp32_shard
 
             self.has_full_params = False
 
@@ -1721,7 +1719,7 @@ class FullyShardedDataParallel(nn.Module):
             if self.mixed_precision and not force_full_precision:
                 self._cast_fp32_param_shards_to_fp16()
 
-            if self.move_params_to_cpu:
+            if self.move_params_to_cpu and not force_full_precision:
                 self._cast_fp32_param_shards_to_fp16()
 
             for p in self.params:

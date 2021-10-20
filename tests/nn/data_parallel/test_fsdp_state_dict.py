@@ -222,7 +222,7 @@ class TestStateDictDeviceDtype(DistributedTest):
             fsdp_model = fsdp_model.cuda()
         autocast = fsdp_model.mixed_precision or pure_fp16
         self._train_for_several_steps(fsdp_model, 1, autocast)
-
+        print(f"pure_fp16 {pure_fp16} config {config}")
         state_dict = fsdp_model.state_dict()
 
         state_dict_device = config.get("state_dict_device")
