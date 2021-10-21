@@ -282,12 +282,11 @@ class TargetScoreFunction(torch.autograd.Function):
         assert i.requires_grad
         assert w.requires_grad
         assert not target.requires_grad
-        assert i.is_leaf
         assert w.is_leaf
         with torch.enable_grad():
             scores = TargetScoreFunction.get_target_score(i, w, target, ctx.kernel_obj.fp_target)
         torch.autograd.backward(scores, *args)
-        return None, i.grad, w.grad, None
+        return None, i.grad if i.is_leaf else None, w.grad, None
 
 
 class TorchFuseAllTiled(nn.Module):
