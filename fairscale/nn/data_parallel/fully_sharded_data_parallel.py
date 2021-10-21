@@ -304,6 +304,8 @@ class FullyShardedDataParallel(nn.Module):
         self.verbose = verbose
         # Experimental feature for now. Use at your own risk.
         self.ssd_offload = kwargs.get("ssd_offload", False)
+        if self.ssd_offload:
+            self.compute_device = torch.device("cuda")
 
         self.gradient_predivide_factor: float = self._get_gradient_predivide_factor(self.world_size)
         self.gradient_postdivide_factor: float = self.world_size / self.gradient_predivide_factor
@@ -1701,10 +1703,10 @@ class FullyShardedDataParallel(nn.Module):
                 # TODO(anj): we have a similar check elsewhere. Should we do this automatically?
                 self.ssd_buffer.from_disk(self.buffer_size, dtype=self.compute_dtype)
 
-                # The params are on disk and need to be moved to the CPU.
-                for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
-                    p._fp32_shard = handle.get_tensor().view(p._shard_size)  # type: ignore
-                    p.data = p._fp32_shard
+            # The params are on disk and need to be moved to the CPU.
+            for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
+                p._fp32_shard = handle.get_tensor().view(p._shard_size)  # type: ignore
+                p.data = p._fp32_shard
 
             self.has_full_params = False
 
@@ -1745,6 +1747,7 @@ class FullyShardedDataParallel(nn.Module):
                     # Fill output_tensor with (p.data for each shard in self.world_size)
                     if hasattr(dist, "_all_gather_base") and enable_nccl_base_collectives:
                         # New version of PyTorch has all_gather_base, which is faster than chunk and then all_gather.
+                        print(f"output_tensor.dtype {output_tensor.dtype} p_data {p_data.dtype} p.data {p.data.dtype} force_full_precision {force_full_precision} self.mixed_precision {self.mixed_precision} p._full_param_padded {p._full_param_padded.dtype}")
                         dist._all_gather_base(output_tensor, p_data, group=self.process_group)
                     else:
                         chunks = list(output_tensor.chunk(self.world_size))
