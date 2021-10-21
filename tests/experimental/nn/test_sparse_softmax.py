@@ -160,7 +160,7 @@ def test_torch_fuse_all():
     shape = ((5, 3), (3, 7))
     large = True
     if large:
-        shape = ((4 * 2048, 4096), (4096, 256008))
+        shape = ((1 * 2048, 4096), (4096, 256008))
     print("\nshapes are", shape)
 
     input, weight, target = get_data(shape, dtype=torch.float16)
@@ -168,6 +168,8 @@ def test_torch_fuse_all():
 
     o = k(input, target)
     o.backward()
+    mem = round(torch.cuda.max_memory_allocated() / 1024 / 1024)
+    print("peak mem for tiled fwd+bwd =", mem)
     print(o, o.shape, weight.grad.norm())
     print(weight.grad)
     g1 = weight.grad.clone()

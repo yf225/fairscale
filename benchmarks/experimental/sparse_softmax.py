@@ -6,6 +6,7 @@
 import argparse
 import contextlib
 from pprint import pprint
+from statistics import mean
 import time
 
 import torch
@@ -28,10 +29,6 @@ from fairscale.utils.testing import get_smi_memory
 
 """ Benchmarking various softmax kernels. Some are dense and some are with label and top-K sparsity. """
 
-# TODO:
-#   From Naman: d_model varies between [2k, 12k]
-#               input: 8 * 2K = 16K -- 2K is seq len, 8 is batch size
-#               vocab: 256K
 SHAPES = [
     # name, activation, FC weights
     # ("1k_128h_256k", (1024, 128), (128, 256 * 1024)),
@@ -40,13 +37,13 @@ SHAPES = [
     # ("24k_4k_50k", (12 * 2048, 4 * 1024), (4 * 1024, 50 * 1024)),
     # ("8k_4k_256k", (4 * 2048, 4 * 1024), (4 * 1024, 256 * 1024)),
     # ("8k_4k_256008", (4 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
-    ("xk_4k_256008", (10 * 2048, 4 * 1024), (4 * 1024, 256008)),
+    ("xk_4k_256008", (1 * 2048, 4 * 1024), (4 * 1024, 256008)),
 ]
 KERNELS = [
     # BaselineSoftmax,
-    # BaselineSoftmaxNllLoss,  # bs2=16G, bs4=28G, bs6=illegal mem, bs8=illegal mem
+    BaselineSoftmaxNllLoss,
     # TritonFuseAll,
-    TorchFuseAllTiled,  # bs2=12G, bs4=16G, bs8=23.4G, bs10=26.6G, bs12=OOM  (self.fp_sum=1)
+    TorchFuseAllTiled,
     #    TritonSoftmax,
     #    InplaceSoftmax,
     # TiledSoftmax,
@@ -64,7 +61,33 @@ def my_nll_loss(lprobs, target):
 
 
 def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
+    """ Measure both GPU runtime and peak memory usage of a kernel. """
     input, weight, target = data
+
+    def _test(kernel_obj, event):
+        context = contextlib.suppress()
+        if no_grad:
+            context = torch.no_grad()
+        with context:
+            if event is not None:
+                event.record()
+            out = kernel_obj(input, target)
+            if fwd_bwd:
+                assert not no_grad
+                if kernel not in [BaselineSoftmaxNllLoss, TorchFuseAllTiled]:
+                    my_nll_loss(out, target).backward()
+                else:
+                    out.backward()
+            del out
+
+    def _get_kernel():
+        return kernel(
+            weight, k=200, tile_factor=16
+        )  # 16 is good for TorchFuseAllTiled, 8 and 32 are both slower. Power of 2 is much better. memory wise, 16 is good enough and their seems to be a floor of 2.xGB no matter what with no_grad
+
+    #
+    # Run once to measure memory.
+    #
 
     # Ensure GPU memory is minimal and get_smi_memory is good
     torch.cuda.empty_cache()
@@ -77,37 +100,11 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
     input, weight.data, target = input.cuda(), weight.data.cuda(), target.cuda()
 
     # Create the kernel
-    k = kernel(
-        weight, k=200, tile_factor=16
-    )  # 16 is good for TorchFuseAllTiled, 8 and 32 are both slower. Power of 2 is much better. memory wise, 16 is good enough and their seems to be a floor of 2.xGB no matter what with no_grad
+    k = _get_kernel()
+    _test(k, None)
 
-    # Get the events
-    events = [Event(enable_timing=True) for _ in range(repeats)]
-
-    # Queue the ops to GPU
-    cpu_start_time = time.time()
-    for i in range(repeats):
-        context = contextlib.suppress()
-        if no_grad:
-            context = torch.no_grad()
-        with context:
-            events[i].record()
-            out = k(input, target)
-            if fwd_bwd:
-                if kernel not in [BaselineSoftmaxNllLoss, TorchFuseAllTiled]:
-                    my_nll_loss(out, target).backward()
-                else:
-                    out.backward()
-            del out
-    # Cpu is done
-    cpu_time = time.time() - cpu_start_time
     # Might wait for gpu here
     torch.cuda.synchronize()
-
-    # Get the durations
-    durations = [cpu_time * 1000]  # convert seconds to ms.
-    for x, y in zip(events, events[1:]):
-        durations.append(x.elapsed_time(y))
 
     # Free memory
     del k
@@ -122,7 +119,44 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
     peak_mem = peak_mem_after - cur_mem_before
     smi_peak_mem = smi_mem_after - smi_mem_before
 
-    return peak_mem, smi_peak_mem, durations
+    #
+    # Run multiple times to get both CPU timing and average GPU timing.
+    #
+
+    # Move tensors to GPU and get k, again.
+    input, weight.data, target = input.cuda(), weight.data.cuda(), target.cuda()
+    k = _get_kernel()
+
+    # Get the events
+    events = [Event(enable_timing=True) for _ in range(repeats + 1)]
+
+    # Queue the ops to GPU
+    cpu_start_time = time.time()
+    for i in range(repeats):
+        _test(k, events[i])
+    events[i + 1].record()  # end time of the last run
+    # Cpu is done
+    cpu_time = time.time() - cpu_start_time
+    # Might wait for gpu here
+    torch.cuda.synchronize()
+
+    # Get the durations
+    durations = [cpu_time * 1000]  # convert seconds to ms.
+    for x, y in zip(events, events[1:]):
+        durations.append(x.elapsed_time(y))
+    assert len(durations) == repeats + 1
+
+    # Free memory
+    del k
+    input, weight.data, target = input.cpu(), weight.data.cpu(), target.cpu()
+    weight.grad = None
+    cur_mem_after = round(torch.cuda.memory_allocated() / 1024 / 1024)
+    assert cur_mem_after == 0, cur_mem_after
+
+    # skip 2 for cpu time and first warm up time.
+    time_per_call = mean(durations[2:])  # ms
+    time_per_token = time_per_call * 1000 / input.shape[0]  # us
+    return peak_mem, smi_peak_mem, durations[:2] + [time_per_call, time_per_token]
 
 
 def main():

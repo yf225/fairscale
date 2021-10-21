@@ -145,7 +145,7 @@ class TorchFuseAllTiled(nn.Module):
         self.fp_target = True
         self.log_softmax = True
         self.reduction = "sum"
-        assert self.reduction in ["sum", "mean", "none"]
+        assert self.reduction in ["sum", "mean"]
 
     def get_max(self, i: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
         _m = torch.matmul(i, w.T)
@@ -160,6 +160,20 @@ class TorchFuseAllTiled(nn.Module):
             _s = _s.float()
         _s = (_s - maxs_at_idx.reshape(-1, 1)).exp().sum(dim=1)
         return _s
+
+    def get_target_nlprob(
+        self, i: torch.Tensor, w: torch.Tensor, debase_max: torch.Tensor, exp_sums: torch.Tensor
+    ) -> torch.Tensor:
+        target_score = i * w  # element wide multiply, both with shape (tokens, d_model)
+        if self.fp_target:
+            target_score = target_score.float()
+        target_score = target_score.sum(dim=1)  # sum into target scores with shape (tokens,)
+        prob = (target_score - debase_max).exp() / exp_sums
+        if self.log_softmax:
+            # lprob
+            prob = prob.log()
+        # nlprob, then sum over all tokens.
+        return -prob.sum()
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         assert kwargs == {}
@@ -178,12 +192,17 @@ class TorchFuseAllTiled(nn.Module):
         inputs = torch.split(input, next_power_of_2_or_max(tokens // self.tf_in, tokens), 0)
         weights = torch.split(self.proj_weight, next_power_of_2_or_max(vocab // self.tf_w, vocab), 0)
 
+        checkpointing = True
+
         # Get maxs
         maxs = []
         for i in inputs:
             m = None  # max with (tokens_tile,) shape
             for w in weights:
-                _m = checkpoint(self.get_max, i, w)
+                if checkpointing:
+                    _m = checkpoint(self.get_max, i, w)
+                else:
+                    _m = self.get_max(i, w)
                 if m is None:
                     m = _m
                 else:
@@ -198,7 +217,10 @@ class TorchFuseAllTiled(nn.Module):
         for idx, i in enumerate(inputs):
             s = None  # sum with (tokens_tile,) shape
             for w in weights:
-                _s = checkpoint(self.get_sum, i, w, maxs[idx])
+                if checkpointing:
+                    _s = checkpoint(self.get_sum, i, w, maxs[idx])
+                else:
+                    _s = self.get_sum(i, w, maxs[idx])
                 if s is None:
                     s = _s
                 else:
@@ -211,17 +233,9 @@ class TorchFuseAllTiled(nn.Module):
         # select weights for targets
         tw = self.proj_weight.gather(dim=0, index=target.reshape(target.shape[0], 1).expand(target.shape[0], d_model))
         assert tw.shape == (tokens, d_model)
-        target_score = input * tw
-        if self.fp_target:
-            target_score = target_score.float()
-        result = ((target_score.sum(dim=1)) - maxs_tensor).exp() / sums
-        if self.log_softmax:
-            result = result.log()
-        result = -result
-        if self.reduction == "sum":
-            result = result.sum()
+        result = self.get_target_nlprob(input, tw, maxs_tensor, sums)
         if self.reduction == "mean":
-            result = result.mean()
+            result /= tokens
         return result
 
 
