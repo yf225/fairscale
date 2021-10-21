@@ -9,7 +9,6 @@ from typing import Any, Tuple
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 
 from .triton import fused_forward  # type: ignore
 
@@ -130,6 +129,167 @@ class TritonSoftmax(BaselineSoftmax):
         return x.reshape(orig_shape)
 
 
+class GetMaxFunction(torch.autograd.Function):
+    @staticmethod
+    def get_max(i: torch.Tensor, w: torch.Tensor, fp: bool) -> torch.Tensor:
+        _m = torch.matmul(i, w.T)
+        if fp:
+            _m = _m.float()
+        _m = _m.max(dim=1)[0]
+        return _m
+
+    @staticmethod
+    def forward(  # type: ignore
+        ctx: Any,
+        i: torch.Tensor,
+        w: torch.Tensor,
+        kernel_obj: "TorchFuseAllTiled",
+        i_idx: int,
+        w_idx: int,
+        w_split_size: int,
+        split_dim: int,
+    ) -> torch.Tensor:
+        ctx.save_for_backward(i, w)
+        ctx.kernel_obj = kernel_obj
+        ctx.i_idx = i_idx
+        ctx.w_idx = w_idx
+        ctx.w_split_size = w_split_size
+        ctx.args = {}
+        assert split_dim == 0
+        with torch.no_grad():
+            return GetMaxFunction.get_max(i, w, kernel_obj.fp_max)
+
+    @staticmethod
+    def backward(ctx: Any, *args: Any) -> Any:
+        assert len(args) == 1
+        # Gradients should already exist due to TargetScoreFunction's backward.
+        assert ctx.kernel_obj.proj_weight.grad is not None
+        # Get saved i and w.
+        i, w = ctx.saved_tensors
+        # Accumulate and args[0] if we are in the backward of GetSumFunction.
+        # This is important because fp16 accumulation error will be too big
+        # otherwise.
+        args_key = (ctx.i_idx, ctx.w_idx)
+        if ctx.kernel_obj.inside_sum_bwd:
+            if args_key not in ctx.args:
+                ctx.args[args_key] = args[0]
+            else:
+                ctx.args[args_key] += args[0]
+            return None, None, None, None, None, None, None
+        assert args_key in ctx.args
+        # Now, we are ready to do a backward.
+        args = [ctx.args[args_key] + args[0]]  # type: ignore
+        # Make a tensor from w, which is a view. This stops the original W to
+        # have a grad to be accumulated by the autograd. But we accumulate it
+        # manually below.
+        w = w.clone().requires_grad_(True)
+        # Forward + backward again.
+        with torch.enable_grad():
+            maxs = GetMaxFunction.get_max(i, w, ctx.kernel_obj.fp_max)
+        torch.autograd.backward(maxs, *args)
+        # This local w should have grads.
+        assert w.grad is not None
+        # Accumulate the grads.
+        with torch.no_grad():
+            grads = torch.split(ctx.kernel_obj.proj_weight.grad, ctx.w_split_size)
+            grads[ctx.w_idx].add_(w.grad)
+        return None, None, None, None, None, None, None
+
+
+class GetSumFunction(torch.autograd.Function):
+    @staticmethod
+    def get_sum(i: torch.Tensor, w: torch.Tensor, maxs: torch.Tensor, fp: bool) -> torch.Tensor:
+        _s = torch.matmul(i, w.T)
+        if fp:
+            _s = _s.float()
+        _s = (_s - maxs.reshape(-1, 1)).exp().sum(dim=1)
+        return _s
+
+    @staticmethod
+    def forward(  # type: ignore
+        ctx: Any,
+        i: torch.Tensor,
+        w: torch.Tensor,
+        maxs: torch.Tensor,
+        kernel_obj: "TorchFuseAllTiled",
+        w_idx: int,
+        w_split_size: int,
+        split_dim: int,
+    ) -> torch.Tensor:
+        ctx.save_for_backward(i, w, maxs)
+        ctx.kernel_obj = kernel_obj
+        ctx.w_idx = w_idx
+        ctx.w_split_size = w_split_size
+        assert split_dim == 0
+        with torch.no_grad():
+            return GetSumFunction.get_sum(i, w, maxs, kernel_obj.fp_sum)
+
+    @staticmethod
+    def backward(ctx: Any, *args: Any) -> Any:
+        assert len(args) == 1
+        # Gradients should already exist due to TargetScoreFunction's backward.
+        assert ctx.kernel_obj.proj_weight.grad is not None
+        i, w, maxs = ctx.saved_tensors
+        # Make a tensor from w, which is a view. This stops the original W to
+        # have a grad to be accumulated by the autograd. But we accumulate it
+        # manually below.
+        w = w.clone().requires_grad_(True)
+        # Forward + backward again.
+        with torch.enable_grad():
+            sums = GetSumFunction.get_sum(i, w, maxs, ctx.kernel_obj.fp_sum)
+        # Set a flag to GetMaxFunction's backward to use.
+        ctx.kernel_obj.inside_sum_bwd = True
+        # Retain_graph=True because we will go back into GetMaxFunction from here.
+        # We want to be able to re-enter that backward multiple times.
+        torch.autograd.backward(sums, *args, retain_graph=True)  # type: ignore
+        ctx.kernel_obj.inside_sum_bwd = False
+        # This local w should have grads.
+        assert w.grad is not None
+        # Accumulate the grads.
+        with torch.no_grad():
+            grads = torch.split(ctx.kernel_obj.proj_weight.grad, ctx.w_split_size)
+            grads[ctx.w_idx].add_(w.grad)
+        return None, None, None, None, None, None, None
+
+
+class TargetScoreFunction(torch.autograd.Function):
+    @staticmethod
+    def get_target_score(i: torch.Tensor, w: torch.Tensor, target: torch.Tensor, fp: bool) -> torch.Tensor:
+        tokens, d_model = i.shape
+        assert d_model == w.shape[1]
+        tw = w.gather(dim=0, index=target.reshape(target.shape[0], 1).expand(target.shape[0], d_model))
+        assert tw.shape == (tokens, d_model)
+        target_score = i * tw
+        if fp:
+            target_score = target_score.float()
+        target_score = target_score.sum(dim=1)  # sum into target scores with shape (tokens,)
+        return target_score
+
+    @staticmethod
+    def forward(  # type: ignore
+        ctx: Any, i: torch.Tensor, w: torch.Tensor, target: torch.Tensor, kernel_obj: "TorchFuseAllTiled"
+    ) -> torch.Tensor:
+        ctx.save_for_backward(i, w, target)
+        ctx.kernel_obj = kernel_obj
+        with torch.no_grad():
+            x = TargetScoreFunction.get_target_score(i, w, target, kernel_obj.fp_target)
+        return x
+
+    @staticmethod
+    def backward(ctx: Any, *args: Any) -> Any:
+        assert len(args) == 1
+        i, w, target = ctx.saved_tensors
+        assert i.requires_grad
+        assert w.requires_grad
+        assert not target.requires_grad
+        assert i.is_leaf
+        assert w.is_leaf
+        with torch.enable_grad():
+            scores = TargetScoreFunction.get_target_score(i, w, target, ctx.kernel_obj.fp_target)
+        torch.autograd.backward(scores, *args)
+        return None, i.grad, w.grad, None
+
+
 class TorchFuseAllTiled(nn.Module):
     """ Torch fuse fc + softmax + nll_loss in a tiled fashion.
 
@@ -147,27 +307,20 @@ class TorchFuseAllTiled(nn.Module):
         self.reduction = "sum"
         assert self.reduction in ["sum", "mean"]
 
-    def get_max(self, i: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
-        _m = torch.matmul(i, w.T)
-        if self.fp_max:
-            _m = _m.float()
-        _m = _m.max(dim=1)[0]
-        return _m
+    def get_max(
+        self, i: torch.Tensor, w: torch.Tensor, i_idx: int, w_idx: int, w_split_size: int, split_dim: int
+    ) -> torch.Tensor:
+        return GetMaxFunction.apply(i, w, self, i_idx, w_idx, w_split_size, split_dim)
 
-    def get_sum(self, i: torch.Tensor, w: torch.Tensor, maxs_at_idx: torch.Tensor) -> torch.Tensor:
-        _s = torch.matmul(i, w.T)
-        if self.fp_sum:
-            _s = _s.float()
-        _s = (_s - maxs_at_idx.reshape(-1, 1)).exp().sum(dim=1)
-        return _s
+    def get_sum(
+        self, i: torch.Tensor, w: torch.Tensor, maxs_at_idx: torch.Tensor, w_idx: int, w_split_size: int, split_dim: int
+    ) -> torch.Tensor:
+        return GetSumFunction.apply(i, w, maxs_at_idx, self, w_idx, w_split_size, split_dim)
 
     def get_target_nlprob(
-        self, i: torch.Tensor, w: torch.Tensor, debase_max: torch.Tensor, exp_sums: torch.Tensor
+        self, i: torch.Tensor, w: torch.Tensor, target: torch.Tensor, debase_max: torch.Tensor, exp_sums: torch.Tensor
     ) -> torch.Tensor:
-        target_score = i * w  # element wide multiply, both with shape (tokens, d_model)
-        if self.fp_target:
-            target_score = target_score.float()
-        target_score = target_score.sum(dim=1)  # sum into target scores with shape (tokens,)
+        target_score = TargetScoreFunction.apply(i, w, target, self)
         prob = (target_score - debase_max).exp() / exp_sums
         if self.log_softmax:
             # lprob
@@ -189,20 +342,18 @@ class TorchFuseAllTiled(nn.Module):
         tokens, d_model = input.shape
         vocab, d2 = self.proj_weight.shape
         assert d_model == d2
-        inputs = torch.split(input, next_power_of_2_or_max(tokens // self.tf_in, tokens), 0)
-        weights = torch.split(self.proj_weight, next_power_of_2_or_max(vocab // self.tf_w, vocab), 0)
-
-        checkpointing = True
+        split_dim = 0
+        input_split_size = next_power_of_2_or_max(tokens // self.tf_in, tokens)
+        weight_split_size = next_power_of_2_or_max(vocab // self.tf_w, vocab)
+        inputs = torch.split(input, input_split_size, split_dim)
+        weights = torch.split(self.proj_weight, weight_split_size, split_dim)
 
         # Get maxs
         maxs = []
-        for i in inputs:
+        for i_idx, i in enumerate(inputs):
             m = None  # max with (tokens_tile,) shape
-            for w in weights:
-                if checkpointing:
-                    _m = checkpoint(self.get_max, i, w)
-                else:
-                    _m = self.get_max(i, w)
+            for w_idx, w in enumerate(weights):
+                _m = self.get_max(i, w, i_idx, w_idx, weight_split_size, split_dim)
                 if m is None:
                     m = _m
                 else:
@@ -216,11 +367,8 @@ class TorchFuseAllTiled(nn.Module):
         sums = []
         for idx, i in enumerate(inputs):
             s = None  # sum with (tokens_tile,) shape
-            for w in weights:
-                if checkpointing:
-                    _s = checkpoint(self.get_sum, i, w, maxs[idx])
-                else:
-                    _s = self.get_sum(i, w, maxs[idx])
+            for w_i, w in enumerate(weights):
+                _s = self.get_sum(i, w, maxs[idx], w_i, weight_split_size, split_dim)
                 if s is None:
                     s = _s
                 else:
@@ -231,9 +379,7 @@ class TorchFuseAllTiled(nn.Module):
         assert sums.shape == (tokens,)
 
         # select weights for targets
-        tw = self.proj_weight.gather(dim=0, index=target.reshape(target.shape[0], 1).expand(target.shape[0], d_model))
-        assert tw.shape == (tokens, d_model)
-        result = self.get_target_nlprob(input, tw, maxs_tensor, sums)
+        result = self.get_target_nlprob(input, self.proj_weight, target, maxs_tensor, sums)
         if self.reduction == "mean":
             result /= tokens
         return result

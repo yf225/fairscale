@@ -7,6 +7,8 @@
 # pylint: disable=missing-class-docstring
 # pylint: disable=missing-function-docstring
 
+import os
+
 import pytest
 import torch
 from torch import nn
@@ -157,6 +159,7 @@ def test_triton_fuse_all():
 
 @skip_if_no_cuda
 def test_torch_fuse_all():
+    torch.random.manual_seed(os.getpid())
     shape = ((5, 3), (3, 7))
     large = True
     if large:
@@ -168,19 +171,37 @@ def test_torch_fuse_all():
 
     o = k(input, target)
     o.backward()
+    print(o, o.shape)
+    del o
+
+    cur_mem = round(torch.cuda.memory_allocated() / 1024 / 1024)
     mem = round(torch.cuda.max_memory_allocated() / 1024 / 1024)
-    print("peak mem for tiled fwd+bwd =", mem)
-    print(o, o.shape, weight.grad.norm())
-    print(weight.grad)
+    print("cur and peak mem for tiled fwd+bwd =", cur_mem, mem)
+
+    assert input.shape == input.grad.shape
+    input_data = input.data.cpu()
+    input_grad1 = input.grad.cpu()
+    del input
+
+    cur_mem = round(torch.cuda.memory_allocated() / 1024 / 1024)
+    mem = round(torch.cuda.max_memory_allocated() / 1024 / 1024)
+    print("after moving input and its grad, cur and peak mem for tiled fwd+bwd =", cur_mem, mem)
+
+    print(weight.grad.norm(), weight.grad)
     g1 = weight.grad.clone()
     weight.grad = None
 
+    input = input_data.cuda().requires_grad_(True)
     refk = BaselineSoftmaxNllLoss(weight)
     o = refk(input, target)
     o.backward()
-    print(o, o.shape, weight.grad.norm())
-    print(weight.grad)
+    print(o, o.shape)
+    del o
+    print(weight.grad.norm(), weight.grad)
     g2 = weight.grad.clone()
+    input_grad2 = input.grad.cpu()
 
     diff = g1 - g2
-    print(diff.min(), diff.max())
+    print("weight grad diff", diff.min(), diff.max())
+    diff = input_grad1 - input_grad2
+    print("input grad diff", diff.min(), diff.max())
