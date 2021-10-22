@@ -94,6 +94,10 @@ class BaselineSoftmaxNllLoss(BaselineSoftmax):
         input, target = input
         assert isinstance(input, torch.Tensor)
         assert isinstance(target, torch.Tensor)
+        if len(input.shape) == 3:
+            input = input.reshape(-1, input.shape[2])
+        if len(target.shape) == 2:
+            target = target.reshape(-1)
         if self.fp16:
             assert input.dtype == torch.float16
         x = self.fc(input)
