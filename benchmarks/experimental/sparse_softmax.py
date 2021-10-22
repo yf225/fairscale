@@ -10,6 +10,7 @@ from statistics import mean
 import time
 
 import torch
+from torch import nn
 from torch.cuda import Event
 
 from fairscale.experimental.nn import (  # noqa: F401
@@ -37,11 +38,11 @@ SHAPES = [
     # ("24k_4k_50k", (12 * 2048, 4 * 1024), (4 * 1024, 50 * 1024)),
     # ("8k_4k_256k", (4 * 2048, 4 * 1024), (4 * 1024, 256 * 1024)),
     # ("8k_4k_256008", (4 * 2048, 4 * 1024), (4 * 1024, 256008)),  # max seq len for base is 2100, 2300 for top-k
-    ("xk_4k_256008", (1 * 2048, 4 * 1024), (4 * 1024, 256008)),
+    ("xk_4k_256008", (32 * 2048, 4 * 1024), (4 * 1024, 256008)),
 ]
 KERNELS = [
     # BaselineSoftmax,
-    BaselineSoftmaxNllLoss,
+    # BaselineSoftmaxNllLoss,
     # TritonFuseAll,
     TorchFuseAllTiled,
     #    TritonSoftmax,
@@ -62,7 +63,14 @@ def my_nll_loss(lprobs, target):
 
 def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
     """ Measure both GPU runtime and peak memory usage of a kernel. """
-    input, weight, target = data
+    tokens = data[0].shape[0]
+
+    def get_cuda_data():
+        with torch.no_grad():
+            i, w, t = data  # i, t are tensors, w is param
+            w = nn.Linear(w.shape[1], w.shape[0], bias=False, dtype=w.dtype, device="cuda").weight
+            assert w.requires_grad
+            return i.cuda().requires_grad_(True), w, t.cuda()
 
     def _test(kernel_obj, event):
         context = contextlib.suppress()
@@ -79,6 +87,12 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
                 else:
                     out.backward()
             del out
+        if fwd_bwd:
+            assert input.grad is not None, input
+            assert weight.grad is not None, weight
+            assert target.grad is None, target
+            input.grad = None
+            weight.grad = None
 
     def _get_kernel():
         return kernel(
@@ -97,7 +111,7 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
     assert cur_mem_before == 0, cur_mem_before
 
     # Move tensors to GPU.
-    input, weight.data, target = input.cuda(), weight.data.cuda(), target.cuda()
+    input, weight, target = get_cuda_data()
 
     # Create the kernel
     k = _get_kernel()
@@ -108,8 +122,9 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
 
     # Free memory
     del k
-    input, weight.data, target = input.cpu(), weight.data.cpu(), target.cpu()
-    weight.grad = None
+    del input
+    del weight
+    del target
     cur_mem_after = round(torch.cuda.memory_allocated() / 1024 / 1024)
     assert cur_mem_after == 0, cur_mem_after
 
@@ -124,7 +139,7 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
     #
 
     # Move tensors to GPU and get k, again.
-    input, weight.data, target = input.cuda(), weight.data.cuda(), target.cuda()
+    input, weight, target = get_cuda_data()
     k = _get_kernel()
 
     # Get the events
@@ -148,14 +163,13 @@ def run_on_gpu(kernel, data, repeats, no_grad, fwd_bwd):
 
     # Free memory
     del k
-    input, weight.data, target = input.cpu(), weight.data.cpu(), target.cpu()
-    weight.grad = None
+    input, weight, target = None, None, None
     cur_mem_after = round(torch.cuda.memory_allocated() / 1024 / 1024)
     assert cur_mem_after == 0, cur_mem_after
 
     # skip 2 for cpu time and first warm up time.
     time_per_call = mean(durations[2:])  # ms
-    time_per_token = time_per_call * 1000 / input.shape[0]  # us
+    time_per_token = time_per_call * 1000 / tokens  # us
     return peak_mem, smi_peak_mem, durations[:2] + [time_per_call, time_per_token]
 
 

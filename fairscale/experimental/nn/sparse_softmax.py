@@ -299,12 +299,16 @@ class TorchFuseAllTiled(nn.Module):
         super().__init__()
         self.proj_weight = proj_weight
         self.tf_in, self.tf_w, self.tf_target = tile_factor, tile_factor, tile_factor
+        self.tf_in //= 2
         self.fp_max = True
         self.fp_sum = True  # This is esp. important when tensors are large. Otherwise, you get inf.
         self.fp_target = True
         self.log_softmax = True
         self.reduction = "sum"
         assert self.reduction in ["sum", "mean"]
+        print(
+            f"XXX cfg tf_in={self.tf_in} tf_w={self.tf_w} tf_target={self.tf_target} fp_max={self.fp_max} fp_sum={self.fp_sum} fp_target={self.fp_target} log_softmax={self.log_softmax} reduction={self.reduction}"
+        )
 
     def get_max(
         self, i: torch.Tensor, w: torch.Tensor, i_idx: int, w_idx: int, w_split_size: int, split_dim: int
@@ -328,6 +332,9 @@ class TorchFuseAllTiled(nn.Module):
         return -prob.sum()
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
+        cur_mem = round(torch.cuda.memory_allocated() / 1024 / 1024)
+        mem = round(torch.cuda.max_memory_allocated() / 1024 / 1024)
+        print("XXX cur, peak", cur_mem, mem)
         assert kwargs == {}
         input, target = input
         assert isinstance(input, torch.Tensor)
