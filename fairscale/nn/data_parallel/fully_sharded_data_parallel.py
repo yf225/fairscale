@@ -1221,7 +1221,6 @@ class FullyShardedDataParallel(nn.Module):
             self._streams["all_gather"].wait_stream(torch.cuda.current_stream())
 
     def forward(self, *args: Any, **kwargs: Any) -> torch.Tensor:
-
         if self.ssd_offload:
             if list(self.ssd_buffer.buffer.size()) == [1]:
                 # TODO(anj): we have a similar check elsewhere. Should we do this automatically?
@@ -1230,6 +1229,8 @@ class FullyShardedDataParallel(nn.Module):
             # The params are on disk and need to be moved to the CPU.
             for p, handle in zip(self.params, self.ssd_buffer.get_tensors()):
                 p.data = handle.get_tensor().view(p._shard_size)  # type: ignore
+                if hasattr(p, "_fp32_shard"):
+                    del p._fp32_shard  # reset _init_param_attributes
 
         self._lazy_init()
         # Start of a forward pass.
@@ -1724,6 +1725,7 @@ class FullyShardedDataParallel(nn.Module):
             if self.move_params_to_cpu and not force_full_precision:
                 self._cast_fp32_param_shards_to_fp16()
 
+                        
             for p in self.params:
                 if not p._is_sharded:  # e.g., when world_size == 1
                     update_p_data()
@@ -1747,7 +1749,6 @@ class FullyShardedDataParallel(nn.Module):
                     # Fill output_tensor with (p.data for each shard in self.world_size)
                     if hasattr(dist, "_all_gather_base") and enable_nccl_base_collectives:
                         # New version of PyTorch has all_gather_base, which is faster than chunk and then all_gather.
-                        print(f"output_tensor.dtype {output_tensor.dtype} p_data {p_data.dtype} p.data {p.data.dtype} force_full_precision {force_full_precision} self.mixed_precision {self.mixed_precision} p._full_param_padded {p._full_param_padded.dtype}")
                         dist._all_gather_base(output_tensor, p_data, group=self.process_group)
                     else:
                         chunks = list(output_tensor.chunk(self.world_size))
