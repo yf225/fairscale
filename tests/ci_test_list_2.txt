@@ -47,5 +47,6 @@ tests/experimental/nn/test_sync_batchnorm.py
 tests/experimental/nn/ampnet_pipe_process/test_ampnet_pipe.py
 tests/experimental/nn/test_offload.py
 tests/experimental/nn/test_auto_shard.py
+tests/experimental/nn/test_sparse_softmax.py
 tests/experimental/optim/test_dynamic_loss_scaler.py
 tests/experimental/tooling/test_layer_memory_tracker.py

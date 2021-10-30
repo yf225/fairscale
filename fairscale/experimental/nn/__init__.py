@@ -6,6 +6,18 @@
 from typing import List
 
 from .offload import OffloadModel
+from .sparse_softmax import (  # dense; sparse
+    BaselineSoftmax,
+    BaselineSoftmaxNllLoss,
+    InplaceSoftmax,
+    TiledSoftmax,
+    TopKFaissSoftmax,
+    TopKSoftmax,
+    TopKTiledSoftmax,
+    TorchFuseAllTiled,
+    TritonFuseAll,
+    TritonSoftmax,
+)
 from .sync_batchnorm import SyncBatchNorm
 
 __all__: List[str] = []
