@@ -1247,6 +1247,9 @@ class FullyShardedDataParallel(nn.Module):
             self._post_backward_callback_queued = False
 
         def _pre_backward_hook(*unused: Any) -> None:
+            from fairscale.utils.testing import print_mem_r0
+
+            print_mem_r0(f"bwd start @ {id(self)}")
             # try to queue final backward callback only once for root, so
             # that final backward callback is attached to the outer most
             # backward graph task and called after all the backward

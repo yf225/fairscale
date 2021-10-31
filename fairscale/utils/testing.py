@@ -706,3 +706,11 @@ def get_smi_memory() -> float:
             return float(toks[3])
     # If the process is not in the list, we are not using the GPU.
     return 0.0
+
+
+def print_mem_r0(msg: str) -> None:
+    """Useful debugging print of memory on rank 0."""
+    if dist.is_initialized() and dist.get_rank() == 0:
+        cur_mem = round(torch.cuda.memory_allocated() / 1024 / 1024)
+        mem = round(torch.cuda.max_memory_allocated() / 1024 / 1024)
+        print(f"{msg}: cur={cur_mem} peak={mem}")

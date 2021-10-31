@@ -7,7 +7,7 @@
 # pylint: disable=missing-class-docstring
 # pylint: disable=missing-function-docstring
 
-""" Test FSDP with shared weights between wrappers. """
+""" Test FSDP with shared weights between wrappers using a linear model. """
 
 from copy import deepcopy
 
@@ -114,13 +114,6 @@ def _dist_worker(rank, world_size, files, outer_flat, inner_flat, sharing):
     _train(fsdp_model, in_data)
 
     objects_are_equal(sd_after, fsdp_model.state_dict(), raise_exception=True)
-
-    # if not inner_flat:
-    #    # Non FSDP an FSDP should be equal.
-    #    objects_are_equal(model.state_dict(), fsdp_model.state_dict(), raise_exception=True)
-    # else:
-    #    # Otherwise, weight sharing should cause them to be not equal.
-    #    assert not objects_are_equal(model.state_dict(), fsdp_model.state_dict())
 
     teardown()
 
