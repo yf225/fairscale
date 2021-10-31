@@ -8,6 +8,7 @@ from typing import Any, Tuple
 
 import torch
 from torch import nn
+import torch.distributed as dist
 import torch.nn.functional as F
 
 from .triton import fused_forward  # type: ignore
@@ -18,6 +19,7 @@ try:
 except ImportError:
     faiss = None
 
+DEBUG = False
 
 try:
     from xformers.triton.softmax import softmax as triton_softmax
@@ -152,6 +154,8 @@ class GetMaxFunction(torch.autograd.Function):
         w_split_size: int,
         split_dim: int,
     ) -> torch.Tensor:
+        if DEBUG and dist.is_initialized() and dist.get_rank() == 0:
+            print("XXX max fwd")
         ctx.save_for_backward(i, w)
         ctx.kernel_obj = kernel_obj
         ctx.w_idx = w_idx
@@ -163,6 +167,8 @@ class GetMaxFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx: Any, *args: Any) -> Any:
+        if DEBUG and dist.is_initialized() and dist.get_rank() == 0:
+            print("XXX max bwd")
         assert len(args) == 1
         # Gradients should already exist due to TargetScoreFunction's backward.
         assert ctx.kernel_obj.proj_weight.grad is not None
@@ -206,6 +212,8 @@ class GetSumFunction(torch.autograd.Function):
         w_split_size: int,
         split_dim: int,
     ) -> torch.Tensor:
+        if DEBUG and dist.is_initialized() and dist.get_rank() == 0:
+            print("XXX sum fwd")
         ctx.save_for_backward(i, w, maxs)
         ctx.kernel_obj = kernel_obj
         ctx.w_idx = w_idx
@@ -216,6 +224,8 @@ class GetSumFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx: Any, *args: Any) -> Any:
+        if DEBUG and dist.is_initialized() and dist.get_rank() == 0:
+            print("XXX sum bwd")
         assert len(args) == 1
         # Gradients should already exist due to TargetScoreFunction's backward.
         assert ctx.kernel_obj.proj_weight.grad is not None
@@ -255,6 +265,8 @@ class TargetScoreFunction(torch.autograd.Function):
     def forward(  # type: ignore
         ctx: Any, i: torch.Tensor, w: torch.Tensor, target: torch.Tensor, kernel_obj: "TorchFuseAllTiled"
     ) -> torch.Tensor:
+        if DEBUG and dist.is_initialized() and dist.get_rank() == 0:
+            print("XXX target fwd")
         ctx.save_for_backward(i, w, target)
         ctx.kernel_obj = kernel_obj
         with torch.no_grad():
@@ -263,6 +275,8 @@ class TargetScoreFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx: Any, *args: Any) -> Any:
+        if DEBUG and dist.is_initialized() and dist.get_rank() == 0:
+            print("XXX target bwd")
         assert len(args) == 1
         i, w, target = ctx.saved_tensors
         assert i.requires_grad
@@ -273,8 +287,44 @@ class TargetScoreFunction(torch.autograd.Function):
         with torch.enable_grad():
             scores = TargetScoreFunction.get_target_score(i, w, target, ctx.kernel_obj.fp_target)
         torch.autograd.backward(scores, *args)
-        ctx.kernel_obj.proj_weight.grad = w.grad
+        if ctx.kernel_obj.proj_weight.grad is not None:
+            # This means we accumulate full grad between iters. Not memory efficient.
+            ctx.kernel_obj.proj_weight.grad.add_(w.grad)
+        else:
+            ctx.kernel_obj.proj_weight.grad = w.grad
         return i.grad, None, None, None
+
+
+class BackwardTriggerFn(torch.autograd.Function):
+    @staticmethod
+    def forward(  # type: ignore
+        ctx: Any, w: torch.Tensor, trigger_tensor: torch.Tensor
+    ) -> torch.Tensor:
+        if DEBUG and dist.is_initialized() and dist.get_rank() == 0:
+            print("XXX trigger fwd")
+        ctx.save_for_backward(w, trigger_tensor)
+        return w
+
+    @staticmethod
+    def backward(ctx: Any, *args: Any) -> Any:
+        if DEBUG and dist.is_initialized() and dist.get_rank() == 0:
+            print("XXX trigger bwd")
+        assert len(args) == 1
+        w, trigger = ctx.saved_tensors
+        assert w.requires_grad
+        assert trigger.requires_grad
+        return None, torch.zeros_like(trigger)
+
+
+class BackwardTrigger(nn.Module):
+    def __init__(self, linked_param: torch.Tensor):
+        super().__init__()
+        assert isinstance(linked_param, nn.Parameter)
+        self.trigger = nn.Parameter(torch.rand(1, dtype=linked_param.dtype))
+        self.trigger._linked_param = linked_param
+
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
+        return BackwardTriggerFn.apply(self.trigger._linked_param, self.trigger)
 
 
 class TorchFuseAllTiled(nn.Module):
@@ -283,7 +333,8 @@ class TorchFuseAllTiled(nn.Module):
         This uses less memory but is quite a bit slower.
     """
 
-    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 16):  # k is ignored.
+    def __init__(self, proj_weight: torch.nn.Parameter, k: int = 0, tile_factor: int = 16, reduction: str = "sum"):
+        # k is ignored.
         super().__init__()
         self.proj_weight = proj_weight
         self.tf_in, self.tf_w = tile_factor, tile_factor
@@ -291,8 +342,9 @@ class TorchFuseAllTiled(nn.Module):
         self.fp_sum = True  # This is esp. important when tensors are large. Otherwise, you get inf.
         self.fp_target = True
         self.log_softmax = True
-        self.reduction = "sum"
+        self.reduction = reduction
         assert self.reduction in ["sum", "mean"]
+        self.trigger = BackwardTrigger(self.proj_weight)
         print(
             f"XXX cfg tf_in={self.tf_in} tf_w={self.tf_w} fp_max={self.fp_max} fp_sum={self.fp_sum} fp_target={self.fp_target} log_softmax={self.log_softmax} reduction={self.reduction}"
         )
@@ -319,7 +371,8 @@ class TorchFuseAllTiled(nn.Module):
     def forward(self, *input: Any, **kwargs: Any) -> Any:
         cur_mem = round(torch.cuda.memory_allocated() / 1024 / 1024)
         mem = round(torch.cuda.max_memory_allocated() / 1024 / 1024)
-        print("XXX cur, peak", cur_mem, mem)
+        if DEBUG and dist.is_initialized() and dist.get_rank() == 0:
+            print("XXX cur, peak", cur_mem, mem)
         assert kwargs == {}
         input, target = input
         assert isinstance(input, torch.Tensor)
@@ -337,7 +390,8 @@ class TorchFuseAllTiled(nn.Module):
         input_split_size = next_power_of_2_or_max(tokens // self.tf_in, tokens)
         weight_split_size = next_power_of_2_or_max(vocab // self.tf_w, vocab)
         inputs = torch.split(input, input_split_size, split_dim)
-        weights = torch.split(self.proj_weight, weight_split_size, split_dim)
+        weight = self.trigger()
+        weights = torch.split(weight, weight_split_size, split_dim)
 
         # Get maxs
         maxs = []
