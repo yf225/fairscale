@@ -57,93 +57,6 @@ def read(t: torch.Tensor, filename: str, file_offset_bytes: int = 0) -> None:
             data_read = f.readinto(t_mv[chunk_start:chunk_end])
             assert data_read == chunk_end - chunk_start
 
-
-# PJ: WIP
-"""
-class SsdAdamOptimizer(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0, amsgrad=False) -> None:
-        if not 0.0 <= lr:
-            raise ValueError("Invalid learning rate: {}".format(lr))
-        if not 0.0 <= eps:
-            raise ValueError("Invalid epsilon value: {}".format(eps))
-        if not 0.0 <= betas[0] < 1.0:
-            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
-        if not 0.0 <= betas[1] < 1.0:
-            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
-        if not 0.0 <= weight_decay:
-            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
-        defaults = dict(lr=lr, betas=betas, eps=eps, weight_decay=weight_decay, amsgrad=amsgrad)
-        super(SsdAdamOptimizer, self).__init__(params, defaults)
-
-    def __setstate__(self, state) -> None:
-        super(SsdAdamOptimizer, self).__setstate_(state)
-        for group in self.param_groups:
-            group.setdefault("amsgrad", False)
-
-    @torch.no_grad()
-    def step(self, closure=None) -> Optional[int]:
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-
-        for group in self.param_groups:
-            params_with_grad = []
-            grads = []
-            exp_avgs = []
-            exp_avg_sqs = []
-            max_exp_avg_sqs = []
-            state_steps = []
-            beta1, beta2 = group["betas"]
-
-            for p in group["params"]:
-                if p.grad is not None:
-                    params_with_grad.append(p)
-                    if p.grad.is_sparse:
-                        raise RuntimeError("Adam does not support sparse gradients, please consider SparseAdam instead")
-                    grads.append(p.grad)
-
-                    state = self.state[p]
-                    # Lazy state initialization
-                    if len(state) == 0:
-                        state["step"] = 0
-                        # Exponential moving average of gradient values
-                        state["exp_avg"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                        # Exponential moving average of squared gradient values
-                        state["exp_avg_sq"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-                        if group["amsgrad"]:
-                            # Maintains max of all exp. moving avg. of sq. grad. values
-                            state["max_exp_avg_sq"] = torch.zeros_like(p, memory_format=torch.preserve_format)
-
-                    exp_avgs.append(state["exp_avg"])
-                    exp_avg_sqs.append(state["exp_avg_sq"])
-
-                    if group["amsgrad"]:
-                        max_exp_avg_sqs.append(state["max_exp_avg_sq"])
-
-                    # update the steps for each param group update
-                    state["step"] += 1
-                    # record the step after step update
-                    state_steps.append(state["step"])
-
-            F.adam(
-                params_with_grad,
-                grads,
-                exp_avgs,
-                exp_avg_sqs,
-                max_exp_avg_sqs,
-                state_steps,
-                amsgrad=group["amsgrad"],
-                beta1=beta1,
-                beta2=beta2,
-                lr=group["lr"],
-                weight_decay=group["weight_decay"],
-                eps=group["eps"],
-            )
-        return loss
-"""
-
-
 class SsdTensorHandle(torch.Tensor):
     @staticmethod
     def __new__(
@@ -202,6 +115,13 @@ class SsdTensorHandle(torch.Tensor):
         assert self._dtype == tensor.dtype
         self.tensor = tensor
 
+    # if resizing a handle that is part of an ssd buffer, care must be taken that the new size
+    # doesn't conflict with adjacent handles!
+    def point_to_resized_tensor(self, tensor: torch.Tensor) -> None:
+        assert self._dtype == tensor.dtype
+        self._shape = tensor.shape
+        self.tensor = tensor
+
     def to_tensor(self) -> torch.Tensor:
         if self.tensor is not None:
             return self.tensor
@@ -211,11 +131,13 @@ class SsdTensorHandle(torch.Tensor):
             self.tensor = result_tensor
             return self.tensor
 
-    def to_file(self, release_tensor_after_write: bool = True) -> None:
-        assert self.tensor is not None
-        write(self.tensor, self.filename, self.offset * self.tensor.element_size())
-        if release_tensor_after_write:
-            self.tensor = None
+    def to_file(self, permit_when_tensor_none: bool = False, release_tensor_after_write: bool = True) -> None:
+        assert self.tensor is not None or permit_when_tensor_none
+
+        if self.tensor is not None:
+            write(self.tensor, self.filename, self.offset * self.tensor.element_size())
+            if release_tensor_after_write:
+                self.tensor = None
 
     def copy_into_tensor(self, tensor: torch.Tensor) -> None:
         """
@@ -342,6 +264,12 @@ class TorchSaver:
 
 
 class SsdParameter(torch.nn.Parameter, SsdTensorHandle):
+    @classmethod
+    def from_tensor(cls: SsdParameter, tensor: SsdTensorHandle) -> SsdParameter:
+        r = cls(tensor.shape, tensor.dtype, tensor.requires_grad)
+        r.tensor = tensor
+        return r
+
     @staticmethod
     def __new__(
         cls: SsdParameter, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = True
@@ -352,6 +280,137 @@ class SsdParameter(torch.nn.Parameter, SsdTensorHandle):
 
     def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = True) -> None:
         super(SsdParameter, self).__init__(shape, dtype, requires_grad)  # type: ignore
+
+class SsdTensorHandleView(SsdTensorHandle):
+    @classmethod
+    def from_tensor(cls: SsdTensorHandleView, tensor: SsdTensorHandle, view_callback = None) -> SsdTensorHandleView:
+        r = super(cls, cls).from_tensor(tensor)
+        r.view_callback = view_callback
+        return r
+
+    def __init__(self, shape: Tuple[int, ...], dtype: torch.dtype, requires_grad: bool = True) -> None:
+        super(SsdTensorHandleView, self).__init__(shape, dtype, requires_grad)  # type: ignore
+        self.view_callback = None
+
+    def to_tensor(self) -> torch.Tensor:
+        self.view_callback.to_tensor()
+        return self.tensor
+
+    def to_file(self, permit_when_tensor_none: bool = False, release_tensor_after_write: bool = True) -> None:
+        # PJ TODO: Should we ignore to_file from views?
+        pass
+
+class SsdFlatParameter(torch.nn.Parameter, SsdTensorHandle):
+    """ A parameter that is initialized from a list of parameters and can be
+        turned into a list of views as needed.
+    """
+
+    def __new__(cls, params: Sequence[torch.nn.Parameter], filename: str, requires_grad: bool = True) -> "SsdFlatParameter":
+        """ Make an object using the parent's __new__ function. """
+
+        # A empty of non-list input doesn't make sense.
+        if not isinstance(params, (list, tuple)) or len(params) == 0:
+            raise ValueError("An non-empty list or tuple argument is needed")
+
+        # Normally, all items are Parameters. But during pickling, we will have a single
+        # Tensor as the input and later in __init__, the correct _param_numels and _param_shapes
+        # are set.
+        if not all(isinstance(p, (torch.nn.Parameter, torch.Tensor)) for p in params):
+            raise ValueError("List items need to be Parameter types")
+
+        # Flattening involves (1) making a tensor flat (i.e. single dimensional) and (2) making a module
+        # heirarchy flat (using a single tensor to replace a tree of tensors). Therefore,
+        # adding back nesting and heirarchy is counter-productive. If nesting is encountered
+        # in the future, the reasonable thing to do is likely for the top level SsdFlatParameter to
+        # absorb the nested one and keep the result flat, free from hierarchy.
+        if any(isinstance(p, SsdFlatParameter) for p in params):
+            raise ValueError("Nesting SsdFlatParameter is not supported")
+
+        dtype = params[0].dtype
+        size = sum(p.numel() for p in params)
+        r = SsdTensorHandle._make_wrapper_subclass(cls, (size,), dtype=dtype, requires_grad=requires_grad)  # type: ignore
+        return r
+
+    def to_tensor(self) -> torch.Tensor:
+        if self.tensor is None:
+            # Update Views to point to the new tensor
+            result = super(SsdFlatParameter, self).to_tensor()
+            for view in self.views:
+                view.point_to_tensor(self.tensor.narrow(0, view.offset, view._numel).view(view._shape))
+        return self.tensor
+
+    def to_file(self, permit_when_tensor_none: bool = False, release_tensor_after_write: bool = True) -> None:
+        SsdTensorHandle.to_file(self, permit_when_tensor_none=permit_when_tensor_none, release_tensor_after_write=release_tensor_after_write)
+        if release_tensor_after_write:
+            for view in self.views:
+                view.point_to_file(self.filename, view.offset)
+
+    def __init__(self, params: Sequence[torch.nn.Parameter], filename: str, requires_grad: bool = True):
+        """ Initialize the _param_numels and _param_shapes lists. """
+        self._param_numels = [p.numel() for p in params]
+        total_numels = sum(self._param_numels)
+        assert self.numel() <= total_numels, f"Something wrong with __new__ method, {self.numel()} vs. {sum(self._param_numels)}"
+        self._param_shapes = [p.size() for p in params]
+
+        # These are set by FPW class below, not by this class itself.
+        self._param_infos: List[Tuple[str, torch.nn.Module, str]] = []
+        self._shared_param_infos: List[Tuple[str, str, torch.nn.Module, str, torch.nn.Module, str]] = []
+
+        super(SsdFlatParameter, self).__init__(shape=(total_numels,), dtype=params[0].dtype, requires_grad=requires_grad)  # type: ignore
+
+        tensor = torch.cat([p.detach().reshape(-1) if isinstance(p, torch.nn.Parameter) else p.reshape(-1) for p in params], 0)
+        tensor.requires_grad = requires_grad
+        self.set_file_params(filename, 0)
+        self.point_to_tensor(tensor)
+        self.views: List[SsdTensorHandleView] = []
+        offset = 0
+        for (size, shape) in zip(self._param_numels, self._param_shapes):
+            view = SsdTensorHandleView.from_tensor(self.tensor.narrow(0, offset, size).view(shape), view_callback=self)
+            view.set_file_params(filename, offset)
+            self.views.append(view)
+            offset += size
+
+    def get_param_views(self, external_data: Optional[torch.Tensor] = None, as_tensor_handle_view: bool = False) -> Iterator[torch.Tensor]:
+        """ Return a generator of views that map to the original parameters. """
+        # Note, self.data could be sharded, so its numel is <= to the sum.
+        '''
+        assert self.data.numel() <= sum(
+            self._param_numels
+        ), f"Incorrect internal state {self.data.numel()} vs. {sum(self._param_numels)}"
+        '''
+        if external_data:
+            if external_data.numel() != sum(self._param_numels):
+                raise ValueError(
+                    f"Incorrect numel of supplied data: got {external_data.numel()} but expected {sum(self._param_numels)}"
+                )
+            return (t.view(s) for (t, s) in zip(external_data.split(self._param_numels), self._param_shapes))
+        else:
+            if as_tensor_handle_view:
+                return (v for v in self.views)
+            else:
+                return (t.view(s) for (t, s) in zip(self.split(self._param_numels), self._param_shapes))
+
+    def metadata(self) -> Tuple[List[str], List[torch.Size], List[int]]:
+        """Return tuple of (names, shapes, numels) metadata for this flat parameter."""
+        names = [".".join([m, n]) if m else n for (m, _, n) in self._param_infos]
+        return names, self._param_shapes, self._param_numels
+
+    def __setstate__(self, state: Tuple[Any, Any, Any, Any]) -> None:
+        """ Use by pickle to set the internal states. """
+        (self._param_numels, self._param_shapes, self._param_infos, self._shared_param_infos) = state
+        assert self.numel() <= sum(
+            self._param_numels
+        ), f"Incorrect pickling {self.numel()} vs. {sum(self._param_numels)}"
+
+    def __reduce_ex__(self, proto: int) -> Tuple[Any, Any, Any]:
+        """ Support pickling between ranks. """
+        return (
+            SsdFlatParameter,  # Callable
+            # Args to the callable above
+            ([self.data], self.filename, self.requires_grad),
+            # Args to __setstate__
+            (self._param_numels, self._param_shapes, self._param_infos, self._shared_param_infos),
+        )
 
 
 class DisableMemoizationPicklerModule:

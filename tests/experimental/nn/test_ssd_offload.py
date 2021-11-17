@@ -191,3 +191,49 @@ def test_torch_save_load():
     test_ssd_tensor = torch.load(checkpoint_file)
     assert filecmp.cmp(orig_file.name, orig_file.name + "_2", shallow=False)
     os.unlink(orig_file.name + "_2")
+
+def test_ssd_flat_parameter_basic():
+    _init()
+    with tempfile.NamedTemporaryFile() as f:
+        refa_param = torch.nn.Parameter(torch.rand((32, 4), dtype=torch.float32))
+        refb_param = torch.nn.Parameter(torch.rand((32, 4), dtype=torch.float32))
+        refc_param = torch.nn.Parameter(torch.rand((128), dtype=torch.float32))
+        ssd_flat_param = so.SsdFlatParameter([refa_param, refb_param, refc_param], f.name, False)
+
+        param_views = list(ssd_flat_param.get_param_views(as_tensor_handle_view=True))
+
+        assert refa_param.shape == param_views[0].shape
+        assert refb_param.shape == param_views[1].shape
+        assert refc_param.shape == param_views[2].shape
+
+        assert torch.equal(refa_param, param_views[0])
+        assert torch.equal(refb_param, param_views[1])
+        assert torch.equal(refc_param, param_views[2])
+        ssd_flat_param.to_file()
+
+        # at this point param_views and ssd_flat_param should all have None tensor
+        assert param_views[0].tensor is None
+        assert param_views[1].tensor is None
+        assert param_views[2].tensor is None
+        assert ssd_flat_param.tensor is None
+
+        # this should trigger ssd_flat_param.to_tensor (and update all the param_views)
+        param_views[0].to_tensor()
+
+        assert param_views[0].tensor is not None
+        assert param_views[1].tensor is not None
+        assert param_views[2].tensor is not None
+        assert ssd_flat_param.tensor is not None
+
+        # check param views change reflected in ssd_flat_param
+        param_views[0][0][0] = -0.0001
+        assert torch.equal(ssd_flat_param.tensor[0], param_views[0][0][0])
+
+        # check to_file on View is ignored
+        param_views[0].to_file()
+
+        assert param_views[0].tensor is not None
+        assert param_views[1].tensor is not None
+        assert param_views[2].tensor is not None
+        assert ssd_flat_param.tensor is not None
+

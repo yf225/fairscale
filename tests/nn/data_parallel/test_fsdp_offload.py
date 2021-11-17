@@ -266,6 +266,9 @@ class TestSsdLoading(DistributedTest):
     def test_ssd_offloading_train_simple_param(self):
         test_fn = functools.partial(self._test_ssd_offload_train_simple_param)
         spawn_and_init(test_fn)
+    def test_ssd_offload_train_flatten_params_wrapper(self):
+        test_fn = functools.partial(self._test_ssd_offload_train_flatten_params_wrapper)
+        spawn_and_init(test_fn)
 
     def test_ssd_offloading_train_fsdp(self):
         # Uncomment the following lines once training works.
@@ -319,6 +322,39 @@ class TestSsdLoading(DistributedTest):
             # make sure we are using the file version not the cached tensor
             ssd_param.point_to_file(f.name, 0)
             assert torch.equal(ssd_param.to_tensor(), param)
+
+    @classmethod
+    def _test_ssd_offload_train_flatten_params_wrapper(self, rank, group):
+        with tempfile.NamedTemporaryFile() as f:
+            SIZE = 16 * 16
+
+            config = {}
+            config["ssd_offload"] = True
+            config["mixed_precision"] = False
+            config["flatten_parameters"] = True
+            model = FullyShardedDataParallel(SimpleLinear(group, input_size=SIZE, output_size=SIZE, layers=4), **config)
+            if not config["ssd_offload"]:
+                model = model.cuda()
+            model_device = torch.device("cuda")
+            model.train()
+            optim = torch.optim.SGD(model.parameters(), lr=4, momentum=0.9)
+            # Inputs always cuda regardless of move_grads_cpu, or model.device
+            for i in range (10):
+                optim.zero_grad()
+                input = model.get_input(torch.device("cuda"))
+                output = model(*input)
+                loss = model.module.get_loss(input, output).to(model_device)
+                assert loss.dtype == torch.float32
+
+                model.module.run_backward(loss)
+                optim.step()
+
+            if isinstance(model, FullyShardedDataParallel):
+                model.assert_state(TrainingState.IDLE)
+
+            fileList = glob.glob(os.getcwd() + "/tmp*ssd_buf_param*")
+            for file in fileList:
+                rmf(file)
 
     @classmethod
     def _test_ssd_offload_eval(self, rank, group, config):
