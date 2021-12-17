@@ -261,8 +261,16 @@ class FlattenParamsWrapper(nn.Module):
         shared_param_memo: Dict[nn.Parameter, Tuple[str, nn.Module, str]] = {}
         shared_param_infos = []
         params = []
+        first_dtype = None
+        bad_types = []
         for module_name, m in self.named_modules():
             for n, p in m.named_parameters(recurse=False):
+                if first_dtype is None:
+                    first_dtype = p.dtype
+                if p.dtype != first_dtype:
+                    bad_types.append((n, p.dtype))
+
+
                 if p is not None and (m, n) in p_set:
                     if p in shared_param_memo:
                         mname, shared_m, shared_n = shared_param_memo[p]
@@ -273,7 +281,7 @@ class FlattenParamsWrapper(nn.Module):
                         params.append(p)
         del shared_param_memo
 
-        assert len(set(p.dtype for p in params)) == 1, "expects all parameters to have same dtype"
+        assert len(set(p.dtype for p in params)) == 1, f"expects all parameters to have same dtype: {bad_types}"
         assert len(set(p.requires_grad for p in params)) == 1, "expects all parameters to have same requires_grad"
         assert len(params) == len(set(params)), "params list should not have dups"
         return params, param_infos, shared_param_infos
