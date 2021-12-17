@@ -267,7 +267,7 @@ class FlattenParamsWrapper(nn.Module):
             for n, p in m.named_parameters(recurse=False):
                 if first_dtype is None:
                     first_dtype = p.dtype
-                if p.dtype != first_dtype:
+                if p.dtype != torch.float16:
                     bad_types.append((n, p.dtype))
 
 
