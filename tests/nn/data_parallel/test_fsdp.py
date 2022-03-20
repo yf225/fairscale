@@ -157,6 +157,18 @@ class DistributedTest(unittest.TestCase):
 
 
 class TestMixedPrecision(DistributedTest):
+
+    def test_bfloat16_autocast(self):
+        """If autocast enabled, loss should be fp32."""
+        self._spawn_test_case(
+            {"mixed_precision": True},
+            True,  # autocast enabled
+            torch.bfloat16,  # expected_input_dtype
+            torch.bfloat16,  # expected_param_dtype
+            torch.float32,  # expected_loss_dtype
+            torch.bfloat16,  # expected_reduce_dtype
+        )
+        
     def test_all_fp32(self):
         self._spawn_test_case(
             {"mixed_precision": False},
@@ -287,7 +299,7 @@ class TestMixedPrecision(DistributedTest):
             model = FullyShardedDataParallel(model, group, **cfg).cuda()
             device = next(model.parameters()).device
             x = torch.rand(2, 5).to(device)
-            with torch.cuda.amp.autocast(enabled=autocast):
+            with torch.cuda.amp.autocast(enabled=autocast, dtype=p_dtype):
                 loss = model(x)
             loss.backward()
 
