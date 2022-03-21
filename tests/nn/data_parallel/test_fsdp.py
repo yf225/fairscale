@@ -299,7 +299,7 @@ class TestMixedPrecision(DistributedTest):
             model = FullyShardedDataParallel(model, group, **cfg).cuda()
             device = next(model.parameters()).device
             x = torch.rand(2, 5).to(device)
-            with torch.cuda.amp.autocast(enabled=autocast, dtype=p_dtype):
+            with torch.autocast(enabled=autocast, dtype=p_dtype, device_type="cuda"):
                 loss = model(x)
             loss.backward()
 
