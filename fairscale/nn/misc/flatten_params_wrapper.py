@@ -232,7 +232,6 @@ class FlattenParamsWrapper(nn.Module):
             raise ValueError("Each flat param must be given a unique name")
         self.flat_param_names = [f"flat_param_{n}" for n in flat_param_names]
         flat_param: Optional[nn.Parameter] = None
-
         # Init all flat_params.
         for new_p_set in self._param_sets:
             params, param_infos, shared_param_infos = self._init_flatten_params(new_p_set)

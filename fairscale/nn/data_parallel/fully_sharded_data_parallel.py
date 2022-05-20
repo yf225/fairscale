@@ -453,14 +453,50 @@ class FullyShardedDataParallel(nn.Module):
         to_be_flatten_params: List[List[Parameter]] = [[]]
         non_flatten_params = params
         param_name_groups = [[n] for n in param_names]
+        # This is the suffix list that we appended to flattened parameters to seperate parameters of weight, bias and the rest of
+        # the parameters.
+        param_names_suffix = []
         if self.flatten_parameters:
-            to_be_flatten_params = [params]
+            # We put the params to three groups. weight, bias and the rest of parameters
+            to_be_flatten_params = [[], [], []]
             non_flatten_params = []
-            param_name_groups = [param_names]
+            del param_name_groups
+            param_name_groups = [[], [], []]
+            flat_param_names: List[str] = []
+            for i, n in enumerate(param_names):
+                if "weight" in n:
+                    param_name_groups[0].append(n)
+                    to_be_flatten_params[0].append(params[i])
+                if "bias" in n:
+                    param_name_groups[1].append(n)
+                    to_be_flatten_params[1].append(params[i])
+                if ("weight" not in n) and ("bias" not in n):
+                    param_name_groups[2].append(n)
+                    to_be_flatten_params[2].append(params[i])
+            num_weight_names = len(to_be_flatten_params[0])
+            num_bias_names = len(to_be_flatten_params[1])
+            num_other_names = len(to_be_flatten_params[2])
+            if num_weight_names > 0:
+                param_names_suffix.append("weight")
+            if num_bias_names > 0:
+                param_names_suffix.append("bias")
+            if num_other_names > 0:
+                param_names_suffix.append("reg")
+
         del param_names
+        # if there are no params to be flattened, do not assign flat_param_names, else pass the flat_param_names suffix to the
+        # param groups created above.
+        if len(to_be_flatten_params) == 0:
+            flat_param_names = None
+        else:
+            flat_param_names = param_names_suffix
 
         self._fsdp_wrapped_module: nn.Module = FlattenParamsWrapper(
-            module, param_list=to_be_flatten_params, ssd_offload=self.ssd_offload, ssd_directory=self.ssd_directory
+            module,
+            param_list=to_be_flatten_params,
+            flat_param_names=flat_param_names,
+            ssd_offload=self.ssd_offload,
+            ssd_directory=self.ssd_directory,
         )
         del module  # free original module in case it helps garbage collection
 
