@@ -467,10 +467,10 @@ class FullyShardedDataParallel(nn.Module):
                 if "weight" in n:
                     param_name_groups[0].append(n)
                     to_be_flatten_params[0].append(params[i])
-                if "bias" in n:
+                elif "bias" in n:
                     param_name_groups[1].append(n)
                     to_be_flatten_params[1].append(params[i])
-                if ("weight" not in n) and ("bias" not in n):
+                else:
                     param_name_groups[2].append(n)
                     to_be_flatten_params[2].append(params[i])
             num_weight_names = len(to_be_flatten_params[0])
@@ -481,7 +481,7 @@ class FullyShardedDataParallel(nn.Module):
             if num_bias_names > 0:
                 param_names_suffix.append("bias")
             if num_other_names > 0:
-                param_names_suffix.append("reg")
+                param_names_suffix.append("others")
 
         del param_names
         # if there are no params to be flattened, do not assign flat_param_names, else pass the flat_param_names suffix to the
