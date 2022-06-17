@@ -311,7 +311,7 @@ class FullyShardedDataParallel(nn.Module):
         module: nn.Module,
         process_group: Optional[ProcessGroup] = None,
         # The type for the process_group_reduce_scatter only can be either ProcessGroup or ProcessGroupName
-        process_group_reduce_scatter: Any = ProcessGroupName.default,
+        process_group_reduce_scatter: Any = None,
         reshard_after_forward: bool = True,
         disable_reshard_on_root: bool = True,
         mixed_precision: bool = False,
@@ -331,6 +331,7 @@ class FullyShardedDataParallel(nn.Module):
         cpu_offload: bool = False,
         offload_config: Optional[OffloadConfig] = None,
         state_dict_on_rank_0_only: bool = False,
+        enable_fixing_memory_issues_with_keeping_overlap_patch: bool = True,
     ):
         try:
             import torch._C
@@ -342,6 +343,14 @@ class FullyShardedDataParallel(nn.Module):
         init_start = time.time()
         super().__init__()
         self.process_group = process_group or get_process_group_cached()
+        self.enable_fixing_memory_issues_with_keeping_overlap_patch = enable_fixing_memory_issues_with_keeping_overlap_patch
+
+        if process_group_reduce_scatter is None:
+            if self.enable_fixing_memory_issues_with_keeping_overlap_patch:
+                process_group_reduce_scatter = ProcessGroupName.default
+            else:
+                process_group_reduce_scatter = ProcessGroupName.reduce_scatter
+
         # If ProcessGroupName.default is passed in, the reduce_scatter will use the same process group with
         # the rest of operations. The overlap feature in the backward propagation is disabled.
         if process_group_reduce_scatter == ProcessGroupName.default:
@@ -1153,8 +1162,9 @@ class FullyShardedDataParallel(nn.Module):
         self._is_root: Optional[bool] = None
         self._streams: Dict[str, torch.cuda.Stream] = {}
         self._reducer: Optional[ReduceScatterBucketer] = None
-        self._fsdp_forward_ordering: List[nn.Module] = []
-        self._my_fsdp_instance_idx: Optional[int] = None
+        if self.enable_fixing_memory_issues_with_keeping_overlap_patch:
+            self._fsdp_forward_ordering: List[nn.Module] = []
+            self._my_fsdp_instance_idx: Optional[int] = None
         for p in self.params:
             if hasattr(p, "_fp32_shard"):
                 del p._fp32_shard  # reset _init_param_attributes
@@ -1326,7 +1336,8 @@ class FullyShardedDataParallel(nn.Module):
                 m.no_broadcast_optim_state = m.no_broadcast_optim_state or (
                     (m.world_size == 1) and (m.world_size < self.world_size) and (m.process_group != self.process_group)
                 )
-                m._fsdp_forward_ordering = self._fsdp_forward_ordering
+                if self.enable_fixing_memory_issues_with_keeping_overlap_patch:
+                    m._fsdp_forward_ordering = self._fsdp_forward_ordering
 
     def _setup_streams(self) -> None:
         """Create streams to overlap data transfer and computation."""
@@ -1386,9 +1397,10 @@ class FullyShardedDataParallel(nn.Module):
         if self._is_root and self.mixed_precision:
             args, kwargs = cast_floats_to_right_precision(True, True, *args, **kwargs)
 
-        if self not in self._fsdp_forward_ordering:
-            self._my_fsdp_instance_idx = len(self._fsdp_forward_ordering)
-            self._fsdp_forward_ordering.append(self)
+        if self.enable_fixing_memory_issues_with_keeping_overlap_patch:
+            if self not in self._fsdp_forward_ordering:
+                self._my_fsdp_instance_idx = len(self._fsdp_forward_ordering)
+                self._fsdp_forward_ordering.append(self)
 
         # If enabled, convert the input to FP32 if we are in full precision.
         # no_grad is not used because the input might be for a non-root instance,
@@ -1400,13 +1412,14 @@ class FullyShardedDataParallel(nn.Module):
         # ``self.compute_dtype`` (e.g., FP16 if *mixed_precision* is ``True``).
         self._rebuild_full_params()
 
-        if (
-            self._fsdp_forward_ordering is not None
-            and self._my_fsdp_instance_idx is not None and self._my_fsdp_instance_idx < len(self._fsdp_forward_ordering) - 1
-        ):
-            self._fsdp_forward_ordering[self._my_fsdp_instance_idx + 1]._rebuild_full_params(
-                wait_for_all_gather=False
-            )
+        if self.enable_fixing_memory_issues_with_keeping_overlap_patch:
+            if (
+                self._fsdp_forward_ordering is not None
+                and self._my_fsdp_instance_idx is not None and self._my_fsdp_instance_idx < len(self._fsdp_forward_ordering) - 1
+            ):
+                self._fsdp_forward_ordering[self._my_fsdp_instance_idx + 1]._rebuild_full_params(
+                    wait_for_all_gather=False
+                )
 
         # Register backward hooks to reshard params and reduce-scatter grads.
         # These need to be re-registered every forward pass.
@@ -1496,12 +1509,13 @@ class FullyShardedDataParallel(nn.Module):
             # overhead.
             if self.reshard_after_forward:
                 self._rebuild_full_params()
-                if (
-                    self.reshard_after_forward
-                    and self._fsdp_forward_ordering is not None
-                    and self._my_fsdp_instance_idx is not None and self._my_fsdp_instance_idx > 0
-                ):
-                    self._fsdp_forward_ordering[self._my_fsdp_instance_idx - 1]._rebuild_full_params(wait_for_all_gather=False)
+                if self.enable_fixing_memory_issues_with_keeping_overlap_patch:
+                    if (
+                        self.reshard_after_forward
+                        and self._fsdp_forward_ordering is not None
+                        and self._my_fsdp_instance_idx is not None and self._my_fsdp_instance_idx > 0
+                    ):
+                        self._fsdp_forward_ordering[self._my_fsdp_instance_idx - 1]._rebuild_full_params(wait_for_all_gather=False)
             else:
                 self._use_full_params()
 
@@ -2067,7 +2081,8 @@ class FullyShardedDataParallel(nn.Module):
             # Storage object and unshard it in-place. For now, just resize
             # the Storage to 0 to save memory.
             free_storage_(p._full_param_padded)
-            torch.cuda.current_stream().synchronize()
+            if self.enable_fixing_memory_issues_with_keeping_overlap_patch:
+                torch.cuda.current_stream().synchronize()
 
     def local_metadata_dict(self) -> Dict[str, Any]:
         """
