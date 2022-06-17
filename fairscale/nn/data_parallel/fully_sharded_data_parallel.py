@@ -1395,7 +1395,8 @@ class FullyShardedDataParallel(nn.Module):
         # For root and mixed precision, we convert the input to FP16 (no_grad is needed for
         # the conversion).
         if self._is_root and self.mixed_precision:
-            args, kwargs = cast_floats_to_right_precision(True, True, *args, **kwargs)
+            assert self.compute_dtype in [torch.float16, torch.bfloat16]
+            args, kwargs = cast_floats_to_right_precision(True, True, self.compute_dtype, *args, **kwargs)
 
         if self.enable_fixing_memory_issues_with_keeping_overlap_patch:
             if self not in self._fsdp_forward_ordering:
@@ -1406,7 +1407,8 @@ class FullyShardedDataParallel(nn.Module):
         # no_grad is not used because the input might be for a non-root instance,
         # which mean autograd needs to go through the conversion.
         if self.force_input_to_fp32 and not self.mixed_precision:
-            args, kwargs = cast_floats_to_right_precision(False, False, *args, **kwargs)
+            assert self.compute_dtype in [torch.float16, torch.bfloat16]
+            args, kwargs = cast_floats_to_right_precision(False, False, self.compute_dtype, *args, **kwargs)
 
         # All-gather full parameters. This will also transfer FP32 parameters to
         # ``self.compute_dtype`` (e.g., FP16 if *mixed_precision* is ``True``).
@@ -2474,7 +2476,7 @@ def _get_default_cuda_device(module: nn.Module) -> torch.device:
     return torch.device("cuda")
 
 
-def cast_floats_to_right_precision(to_fp16: bool, no_grad: bool, *args: Any, **kwargs: Any) -> Tuple[Any, Any]:
+def cast_floats_to_right_precision(to_fp16: bool, no_grad: bool, half_dtype, *args: Any, **kwargs: Any) -> Tuple[Any, Any]:
     """
     Cast floating point Tensors in *args or **kwargs to FP16 or FP32 if they are not.
     We also retain the requires_grad flag so that casting doesn't affect the autograd graph.
@@ -2482,14 +2484,14 @@ def cast_floats_to_right_precision(to_fp16: bool, no_grad: bool, *args: Any, **k
 
     def fn_fp16(x: torch.Tensor) -> torch.Tensor:
         if x.dtype is torch.float32:
-            y = x.half()
+            y = x.to(half_dtype)
             if x.is_leaf:
                 y.requires_grad = x.requires_grad
             return y
         return x
 
     def fn_fp32(x: torch.Tensor) -> torch.Tensor:
-        if x.dtype is torch.float16:
+        if x.dtype is half_dtype:
             y = x.float()
             if x.is_leaf:
                 y.requires_grad = x.requires_grad
